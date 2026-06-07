@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import os
 from pathlib import Path
+from typing import Optional, Union
 
 import cv2
 import numpy as np
@@ -36,7 +37,7 @@ def _snap_imgsz(n: int) -> int:
     return s
 
 app = FastAPI(title="Card-Vision API", version="1.0.0")
-_model: YOLO | None = None
+_model: Optional[YOLO] = None
 
 
 def get_model() -> YOLO:
@@ -54,20 +55,20 @@ def get_model() -> YOLO:
 class InferBody(BaseModel):
     imageBase64: str = Field(..., description="JPEG/PNG as base64 (optional data URL prefix)")
     confidence: float = Field(0.25, ge=0.0, le=1.0)
-    imgsz: int | None = Field(
+    imgsz: Optional[int] = Field(
         None,
         ge=320,
         le=2048,
         description="Inference size (multiple of 32). Higher often helps small objects; slower.",
     )
-    augment: bool | None = Field(
+    augment: Optional[bool] = Field(
         None,
         description="Test-time augmentation. If null, uses CARD_VISION_TTA env default.",
     )
 
 
 @app.get("/health")
-def health() -> dict[str, str | int | bool]:
+def health() -> dict[str, Union[str, int, bool]]:
     return {
         "status": "ok",
         "model_path": str(MODEL_PATH),

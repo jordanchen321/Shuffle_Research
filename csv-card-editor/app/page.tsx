@@ -7,6 +7,7 @@ import {
   rowsFromStartEndOrders,
 } from "@/lib/cards";
 import { FanPhotoReader } from "@/components/FanPhotoReader";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import {
   CSV_HEADERS,
   emptyRow,
@@ -110,17 +111,20 @@ export default function Home() {
 
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-8 px-4 py-10 sm:px-6">
-      <header className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
-          Card trial CSV editor
-        </h1>
-        <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-500">
-          <li>
-            <span className="font-mono text-foreground">S H D C</span> = Spades, Hearts, Diamonds,
-            Clubs (rank first, e.g. <span className="font-mono text-foreground">AD</span>,{" "}
-            <span className="font-mono text-foreground">10S</span>)
-          </li>
-        </ul>
+      <header className="flex items-start justify-between gap-4">
+        <div className="space-y-2">
+          <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+            Card trial CSV editor
+          </h1>
+          <ul className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-500">
+            <li>
+              <span className="font-mono text-foreground">S H D C</span> = Spades, Hearts, Diamonds,
+              Clubs (rank first, e.g. <span className="font-mono text-foreground">AD</span>,{" "}
+              <span className="font-mono text-foreground">10S</span>)
+            </li>
+          </ul>
+        </div>
+        <ThemeToggle />
       </header>
 
       <FanPhotoReader

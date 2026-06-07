@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "install-deps": "python -m pip install -r requirements.txt",
-    "server": "python -m uvicorn server:app --host 127.0.0.1 --port 8787",
+    "server": "env/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8787",
     "server:py": "py -m uvicorn server:app --host 127.0.0.1 --port 8787"
   }
 }

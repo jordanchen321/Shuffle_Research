@@ -1,23 +1,21 @@
 @import "tailwindcss";
+@config "../tailwind.config.js";
 
 :root {
   --background: #ffffff;
   --foreground: #171717;
 }
 
+.dark {
+  --background: #0a0a0a;
+  --foreground: #ededed;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  /* System fonts only — avoids next/font Google network + compile cost */
   --font-sans: ui-sans-serif, system-ui, sans-serif, "Segoe UI", Roboto, "Helvetica Neue", Arial;
   --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", Menlo, Monaco, Consolas, monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
 }
 
 body {
