@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data files — collected CSVs are not committed
+*.csv
+
+# Python
+__pycache__/
+*.pyc

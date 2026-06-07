@@ -6,8 +6,8 @@
     "dev": "concurrently -n next,vision -c cyan,magenta \"npm run dev:next\" \"npm run vision-server\"",
     "dev:next": "node --max-old-space-size=2048 node_modules/next/dist/bin/next dev",
     "dev:webpack": "concurrently -n next,vision -c cyan,magenta \"node --max-old-space-size=2048 node_modules/next/dist/bin/next dev --webpack\" \"npm run vision-server\"",
-    "vision:deps": "npm run install-deps --prefix ../card-vision-main",
-    "vision-server": "npm run server --prefix ../card-vision-main",
+    "vision:deps": "npm run install-deps --prefix ../card-vision",
+    "vision-server": "npm run server --prefix ../card-vision",
     "build": "node --max-old-space-size=4096 node_modules/next/dist/bin/next build",
     "start": "node --max-old-space-size=2048 node_modules/next/dist/bin/next start",
     "lint": "eslint"
