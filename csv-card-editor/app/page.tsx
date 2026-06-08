@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   humanizeCardKey,
   mergeVisionReadout,
@@ -48,6 +48,42 @@ function AlertModal({ message, onClose }: { message: string; onClose: () => void
       </div>
     </div>
   );
+}
+
+type SequenceOption = {
+  sequenceId: string;
+  name: string;
+  lastTrialId: string;
+  nextTrialId: string;
+  lastEndOrder: string;
+};
+
+function computeAvailableSequences(rows: CardRow[]): SequenceOption[] {
+  const ids = [...new Set(rows.map((r) => r.sequenceId).filter(Boolean))];
+  return ids.map((seqId) => {
+    const seqRows = rows.filter((r) => r.sequenceId === seqId);
+    const trialIds = [...new Set(seqRows.map((r) => r.trialId))];
+    trialIds.sort((a, b) => {
+      const na = parseInt(a, 10), nb = parseInt(b, 10);
+      return !isNaN(na) && !isNaN(nb) ? na - nb : a.localeCompare(b);
+    });
+    const lastTrialId = trialIds[trialIds.length - 1] ?? "0";
+    const lastTrialRows = seqRows.filter((r) => r.trialId === lastTrialId);
+    const sorted = [...lastTrialRows].sort(
+      (a, b) => parseInt(a.endPosition, 10) - parseInt(b.endPosition, 10),
+    );
+    const lastEndOrder = sorted.map((r) => r.cardNumber).join(" ");
+    const lastNum = parseInt(lastTrialId, 10);
+    const nextTrialId = isNaN(lastNum) ? "" : String(lastNum + 1);
+    const names = [...new Set(seqRows.map((r) => r.name).filter(Boolean))];
+    return {
+      sequenceId: seqId,
+      name: names.length === 1 ? names[0]! : "",
+      lastTrialId,
+      nextTrialId,
+      lastEndOrder,
+    };
+  });
 }
 
 function generateSequenceId(): string {
@@ -181,6 +217,9 @@ export default function Home() {
   const [trialId, setTrialId] = useState("1");
   const [startOrderText, setStartOrderText] = useState("");
   const [endOrderText, setEndOrderText] = useState("");
+  const [resumeSelectedId, setResumeSelectedId] = useState("");
+
+  const availableSequences = useMemo(() => computeAvailableSequences(rows), [rows]);
 
   const rowCount = rows.length;
   const [currentPage, setCurrentPage] = useState(0);
@@ -349,8 +388,34 @@ export default function Home() {
     }
     setRows((prev) => [...prev.filter(hasAnyCell), ...result.rows]);
     setLastMessage(`Appended ${result.rows.length} row(s) for trial "${trialId.trim()}".`);
+    setStartOrderText(endOrderText);
+    setEndOrderText("");
+    const nextNum = parseInt(trialId.trim(), 10);
+    if (!isNaN(nextNum)) setTrialId(String(nextNum + 1));
   }, [buildName, buildSequenceId, trialId, startOrderText, endOrderText, rows]);
 
+  const startNewSequence = useCallback(() => {
+    setBuildSequenceId(generateSequenceId());
+    setTrialId("1");
+    setStartOrderText("");
+    setEndOrderText("");
+    setResumeSelectedId("");
+  }, []);
+
+  const handleResumeSequence = useCallback(
+    (seqId: string) => {
+      setResumeSelectedId(seqId);
+      if (!seqId) return;
+      const seq = availableSequences.find((s) => s.sequenceId === seqId);
+      if (!seq) return;
+      setBuildSequenceId(seq.sequenceId);
+      setTrialId(seq.nextTrialId);
+      setStartOrderText(seq.lastEndOrder);
+      setEndOrderText("");
+      if (seq.name) setBuildName(seq.name);
+    },
+    [availableSequences],
+  );
 
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-8 px-4 py-10 sm:px-6">
@@ -445,6 +510,27 @@ export default function Home() {
         <h2 className="mb-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
           Build rows from card order
         </h2>
+        {availableSequences.length > 0 && (
+          <div className="mb-4 flex flex-wrap items-end gap-3">
+            <label className="flex flex-col gap-1">
+              <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                Resume existing sequence
+              </span>
+              <select
+                value={resumeSelectedId}
+                onChange={(e) => handleResumeSequence(e.target.value)}
+                className="cursor-pointer rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              >
+                <option value="">— or start fresh below —</option>
+                {availableSequences.map((s) => (
+                  <option key={s.sequenceId} value={s.sequenceId}>
+                    {s.sequenceId}{s.name ? ` (${s.name})` : ""} — trial {s.nextTrialId}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
         <div className="mb-4 grid gap-3 sm:grid-cols-3">
           <label className="flex flex-col gap-1">
             <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Name</span>
@@ -518,6 +604,13 @@ export default function Home() {
             className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
           >
             Append rows
+          </button>
+          <button
+            type="button"
+            onClick={startNewSequence}
+            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          >
+            Start New Sequence
           </button>
         </div>
       </section>
