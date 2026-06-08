@@ -180,6 +180,8 @@ export type GenerateResult =
  * Rows sorted by start position. Card Number = canonical token (e.g. 10S, AS, KD).
  */
 export function rowsFromStartEndOrders(
+  name: string,
+  sequenceId: string,
   trialId: string,
   startText: string,
   endText: string,
@@ -252,10 +254,12 @@ export function rowsFromStartEndOrders(
 
   const rows: CardRow[] = startKeys.map((key, idx) => ({
     id: crypto.randomUUID(),
-    trials: trialId,
+    name,
+    sequenceId,
+    trialId,
+    cardNumber: key,
     startPosition: String(idx + 1),
     endPosition: String(endIndex.get(key)!),
-    cardNumber: key,
   }));
 
   return { ok: true, rows };

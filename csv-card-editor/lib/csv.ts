@@ -1,27 +1,40 @@
 export const CSV_HEADERS = [
-  "Trials",
-  "Start Position",
-  "End Position",
-  "Card Number",
+  "name",
+  "sequence_id",
+  "trial_id",
+  "card_number",
+  "start_position",
+  "end_position",
 ] as const;
 
 export type CardRow = {
   id: string;
-  trials: string;
+  name: string;
+  sequenceId: string;
+  trialId: string;
+  cardNumber: string;
   startPosition: string;
   endPosition: string;
-  cardNumber: string;
 };
 
 const HEADER_ALIASES: Record<string, keyof CardRow> = {
-  trials: "trials",
-  trial: "trials",
-  "start position": "startPosition",
-  startposition: "startPosition",
-  "end position": "endPosition",
-  endposition: "endPosition",
-  "card number": "cardNumber",
+  name: "name",
+  sequence_id: "sequenceId",
+  sequenceid: "sequenceId",
+  trial_id: "trialId",
+  trialid: "trialId",
+  // backward compat for old schema
+  trials: "trialId",
+  trial: "trialId",
+  card_number: "cardNumber",
   cardnumber: "cardNumber",
+  "card number": "cardNumber",
+  start_position: "startPosition",
+  startposition: "startPosition",
+  "start position": "startPosition",
+  end_position: "endPosition",
+  endposition: "endPosition",
+  "end position": "endPosition",
 };
 
 function parseLine(line: string, delimiter: string): { cells: string[]; unclosedQuote: boolean } {
@@ -87,12 +100,7 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
     if (key) colMap[key] = idx;
   });
 
-  const required: (keyof CardRow)[] = [
-    "trials",
-    "startPosition",
-    "endPosition",
-    "cardNumber",
-  ];
+  const required: (keyof CardRow)[] = ["startPosition", "endPosition", "cardNumber"];
   const missing = required.filter((k) => colMap[k] === undefined);
   if (missing.length > 0) {
     warnings.push(
@@ -111,10 +119,12 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
     };
     rows.push({
       id: crypto.randomUUID(),
-      trials: get("trials"),
+      name: get("name"),
+      sequenceId: get("sequenceId"),
+      trialId: get("trialId"),
+      cardNumber: get("cardNumber").trim().toUpperCase(),
       startPosition: get("startPosition"),
       endPosition: get("endPosition"),
-      cardNumber: get("cardNumber").trim().toUpperCase(),
     });
   }
 
@@ -135,7 +145,7 @@ export function stringifyCardCsv(rows: CardRow[], delimiter: "," | "\t" = ","): 
   const d = delimiter;
   const header = CSV_HEADERS.map((h) => escapeField(h, d)).join(d);
   const body = rows.map((row) =>
-    [row.trials, row.startPosition, row.endPosition, row.cardNumber]
+    [row.name, row.sequenceId, row.trialId, row.cardNumber, row.startPosition, row.endPosition]
       .map((cell) => escapeField(cell, d))
       .join(d),
   );
@@ -145,9 +155,11 @@ export function stringifyCardCsv(rows: CardRow[], delimiter: "," | "\t" = ","): 
 export function emptyRow(): CardRow {
   return {
     id: crypto.randomUUID(),
-    trials: "",
+    name: "",
+    sequenceId: "",
+    trialId: "",
+    cardNumber: "",
     startPosition: "",
     endPosition: "",
-    cardNumber: "",
   };
 }
