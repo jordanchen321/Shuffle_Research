@@ -44,7 +44,6 @@ export function parseCardToken(raw: string): { suit: number; rank: string; key: 
   if (mNew) {
     const rank = mNew[1]!;
     const letter = mNew[2]!;
-    if (!RANK_RE.test(rank)) return null;
     const suit = SUIT_LETTER_TO_NUM[letter];
     if (!suit) return null;
     return { suit, rank, key: `${rank}${letter}` };
@@ -70,7 +69,7 @@ export function splitOrderText(text: string): string[] {
 }
 
 /** First occurrence of each key only, order preserved. */
-function uniqueKeysInOrder(keys: string[]): string[] {
+export function uniqueKeysInOrder(keys: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const k of keys) {
@@ -252,9 +251,10 @@ export function rowsFromStartEndOrders(
   if (errors.length) return { ok: false, errors };
 
   const rows: CardRow[] = startKeys.map((key, idx) => ({
+    id: crypto.randomUUID(),
     trials: trialId,
     startPosition: String(idx + 1),
-    endPosition: String(endIndex.get(key)),
+    endPosition: String(endIndex.get(key)!),
     cardNumber: key,
   }));
 

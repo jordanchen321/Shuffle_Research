@@ -14,6 +14,7 @@ Optional env:
 from __future__ import annotations
 
 import base64
+import binascii
 import os
 from pathlib import Path
 from typing import Optional, Union
@@ -33,6 +34,7 @@ _DEFAULT_TTA = os.environ.get("CARD_VISION_TTA", "").lower() in ("1", "true", "y
 
 
 def _snap_imgsz(n: int) -> int:
+    # YOLOv8 requires image dimensions as multiples of its stride (32); 320–2048 are practical bounds.
     s = max(320, min(2048, (int(n) // 32) * 32))
     return s
 
@@ -53,7 +55,7 @@ def get_model() -> YOLO:
 
 
 class InferBody(BaseModel):
-    imageBase64: str = Field(..., description="JPEG/PNG as base64 (optional data URL prefix)")
+    imageBase64: str = Field(..., max_length=5_000_000, description="JPEG/PNG as base64 (optional data URL prefix)")
     confidence: float = Field(0.25, ge=0.0, le=1.0)
     imgsz: Optional[int] = Field(
         None,
@@ -85,7 +87,7 @@ def infer(body: InferBody) -> dict:
         raw = raw.split("base64,", 1)[1]
     try:
         data = base64.b64decode(raw)
-    except Exception as exc:  # noqa: BLE001
+    except binascii.Error as exc:
         raise HTTPException(status_code=400, detail=f"Invalid base64: {exc}") from exc
 
     arr = np.frombuffer(data, dtype=np.uint8)
@@ -97,13 +99,16 @@ def infer(body: InferBody) -> dict:
     augment = _DEFAULT_TTA if body.augment is None else body.augment
 
     model = get_model()
-    results = model.predict(
-        source=im,
-        conf=body.confidence,
-        imgsz=imgsz,
-        augment=augment,
-        verbose=False,
-    )
+    try:
+        results = model.predict(
+            source=im,
+            conf=body.confidence,
+            imgsz=imgsz,
+            augment=augment,
+            verbose=False,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
     r = results[0]
     h, w = im.shape[:2]
 
@@ -115,7 +120,7 @@ def infer(body: InferBody) -> dict:
             cx, cy, bw, bh = xywh
             cls_id = int(b.cls[0])
             conf = float(b.conf[0])
-            label = str(names[cls_id]) if names else str(cls_id)
+            label = str(names.get(cls_id, cls_id)) if names else str(cls_id)
             preds.append(
                 {
                     "x": cx,

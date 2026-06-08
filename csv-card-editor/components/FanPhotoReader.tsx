@@ -5,10 +5,10 @@ import {
   dedupeDetectionsPerCardKey,
   detectionsToOrderedKeys,
   extractDetectionPredictions,
-  sortDetectionsLeftToRight,
   visionClassToAppKey,
   type RoboflowDetection,
 } from "@/lib/fanVision";
+import { uniqueKeysInOrder } from "@/lib/cards";
 
 const LS_CONF = "csv_card_editor_card_vision_confidence";
 const LS_LIVE_MS = "csv_card_editor_card_vision_live_ms";
@@ -18,8 +18,8 @@ const LS_VISION_TARGET = "csv_card_editor_vision_order_target";
 const VISION_IMGSZ = 960;
 const VISION_AUGMENT = false;
 
-/** Live auto-merge after this many lone-card reads of the same key (1 = fastest; last-merged guard still blocks repeats). */
-const LIVE_STABLE_FRAMES = 1;
+/** Live auto-merge after this many lone-card reads of the same key in a row (filters single-frame false positives). */
+const LIVE_STABLE_FRAMES = 3;
 
 const LIVE_INTERVAL_OPTIONS = [
   { ms: 350, label: "0.35 s (fastest)" },
@@ -37,23 +37,11 @@ type Props = {
   onStatus: (message: string | null) => void;
 };
 
-/** Left-to-right order, first occurrence of each key only. */
-function orderedUniqueKeys(keys: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const k of keys) {
-    const u = k.toUpperCase();
-    if (seen.has(u)) continue;
-    seen.add(u);
-    out.push(u);
-  }
-  return out;
-}
-
 function videoFrameToJpegBase64(
   video: HTMLVideoElement,
   maxWidth: number,
   quality: number,
+  canvas: HTMLCanvasElement,
 ): string | null {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
@@ -61,7 +49,6 @@ function videoFrameToJpegBase64(
   const scale = Math.min(1, maxWidth / vw);
   const w = Math.max(1, Math.round(vw * scale));
   const h = Math.max(1, Math.round(vh * scale));
-  const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext("2d");
@@ -75,6 +62,7 @@ function videoFrameToJpegBase64(
 export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const capturingRef = useRef(false);
   const liveStartingRef = useRef(false);
   /** Last key we merged from live auto-read; ignore repeats until the camera shows a different key. */
@@ -157,7 +145,16 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
           augment: VISION_AUGMENT,
         }),
       });
-      const data = (await res.json()) as Record<string, unknown>;
+      let data: Record<string, unknown>;
+      try {
+        data = (await res.json()) as Record<string, unknown>;
+      } catch {
+        onStatus(`Server returned a non-JSON response (${res.status}).`);
+        setLastTokens(null);
+        setLastDetections([]);
+        setPendingPickKeys(null);
+        return;
+      }
       if (!res.ok) {
         const hint = typeof data.hint === "string" ? ` ${data.hint}` : "";
         const err =
@@ -175,7 +172,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       const rawPreds = extractDetectionPredictions(data);
       const preds = dedupeDetectionsPerCardKey(rawPreds);
       const merged = rawPreds.length - preds.length;
-      setLastDetections(sortDetectionsLeftToRight(preds));
+      setLastDetections(preds);
       const decoded = detectionsToOrderedKeys(preds);
       if (!decoded.ok) {
         onStatus(decoded.errors.join(" "));
@@ -190,7 +187,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       const line = keysUpper.join(" ");
       setLastTokens(line.length > 0 ? line : null);
 
-      const distinct = orderedUniqueKeys(keysUpper);
+      const distinct = uniqueKeysInOrder(keysUpper);
       if (distinct.length > 1) {
         liveStableKeyRef.current = null;
         liveStableCountRef.current = 0;
@@ -321,8 +318,15 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
     } catch (e) {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
-      const msg = e instanceof Error ? e.message : "Could not open camera.";
-      onStatus(`Camera: ${msg} (needs permission; use https or localhost).`);
+      let msg = "Could not open camera.";
+      if (e instanceof DOMException && e.name === "NotAllowedError") {
+        msg = "Permission denied.";
+      } else if (e instanceof DOMException && e.name === "NotFoundError") {
+        msg = "No camera found.";
+      } else if (e instanceof Error) {
+        msg = e.message;
+      }
+      onStatus(`Camera: ${msg} (needs https or localhost).`);
     } finally {
       liveStartingRef.current = false;
     }
@@ -334,7 +338,12 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       if (capturingRef.current) return;
       const v = videoRef.current;
       if (!v) return;
-      const b64 = videoFrameToJpegBase64(v, 1920, 0.85);
+      const b64 = videoFrameToJpegBase64(
+        v,
+        1920,
+        0.85,
+        canvasRef.current ?? (canvasRef.current = document.createElement("canvas")),
+      );
       if (!b64) return;
       capturingRef.current = true;
       setBusy(true);
@@ -385,19 +394,20 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       </div>
 
       <div className="mb-3 grid gap-3 sm:grid-cols-2">
-        <label className="flex flex-col gap-1">
-          <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
+        <div className="flex flex-col gap-1">
+          <label htmlFor="cv-confidence" className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
             Min confidence (0–1)
-          </span>
+          </label>
           <div className="flex flex-wrap items-center gap-2">
             <input
+              id="cv-confidence"
               type="number"
               min={0}
               max={1}
               step={0.05}
               value={confidence}
               onChange={(e) => setConfidence(Number(e.target.value))}
-              className="max-w-[8rem] rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              className="max-w-32 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
             />
             <button
               type="button"
@@ -407,13 +417,13 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
               Use 0.22
             </button>
           </div>
-        </label>
+        </div>
         <label className="flex flex-col gap-1">
           <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Live interval</span>
           <select
             value={liveIntervalMs}
             onChange={(e) => setLiveIntervalMs(Number(e.target.value))}
-            className="max-w-[10rem] rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+            className="max-w-40 rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
           >
             {LIVE_INTERVAL_OPTIONS.map((o) => (
               <option key={o.ms} value={o.ms}>
@@ -450,7 +460,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
         muted
         className={
           cameraActive
-            ? "mb-3 max-h-72 min-h-[220px] w-full rounded-lg border border-zinc-200 bg-black object-contain dark:border-zinc-800"
+            ? "mb-3 max-h-72 min-h-55 w-full rounded-lg border border-zinc-200 bg-black object-contain dark:border-zinc-800"
             : "pointer-events-none fixed left-0 top-0 h-px w-px opacity-0"
         }
       />
@@ -483,7 +493,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
                 type="button"
                 onClick={() => {
                   onMergeVisionKeys(visionTarget, [k]);
-                  lastLiveMergedKeyRef.current = k.toUpperCase();
+                  lastLiveMergedKeyRef.current = k;
                   liveStableKeyRef.current = null;
                   liveStableCountRef.current = 0;
                   setPendingPickKeys(null);
@@ -522,7 +532,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
               </tr>
             </thead>
             <tbody>
-              {sortDetectionsLeftToRight(lastDetections).map((d, i) => (
+              {lastDetections.map((d, i) => (
                 <tr
                   key={`${d.class}-${i}-${d.x}`}
                   className="border-b border-zinc-100 dark:border-zinc-800"

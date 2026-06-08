@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   humanizeCardKey,
   mergeVisionReadout,
@@ -15,6 +15,77 @@ import {
   stringifyCardCsv,
   type CardRow,
 } from "@/lib/csv";
+
+type CardRowProps = {
+  row: CardRow;
+  globalIndex: number;
+  updateRow: (index: number, field: keyof CardRow, value: string) => void;
+  removeRow: (index: number) => void;
+};
+
+const CardRowComponent = memo(function CardRowComponent({
+  row,
+  globalIndex,
+  updateRow,
+  removeRow,
+}: CardRowProps) {
+  return (
+    <tr className="border-b border-zinc-100 odd:bg-white even:bg-zinc-50/80 dark:border-zinc-800 dark:odd:bg-zinc-950 dark:even:bg-zinc-900/40">
+      <td className="p-1">
+        <input
+          className="w-full min-w-[6rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
+          value={row.trials}
+          onChange={(e) => updateRow(globalIndex, "trials", e.target.value)}
+          aria-label={`Trials row ${globalIndex + 1}`}
+        />
+      </td>
+      <td className="p-1">
+        <input
+          className="w-full min-w-[7rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
+          value={row.startPosition}
+          onChange={(e) => updateRow(globalIndex, "startPosition", e.target.value)}
+          aria-label={`start Position row ${globalIndex + 1}`}
+        />
+      </td>
+      <td className="p-1">
+        <input
+          className="w-full min-w-[7rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
+          value={row.endPosition}
+          onChange={(e) => updateRow(globalIndex, "endPosition", e.target.value)}
+          aria-label={`End position row ${globalIndex + 1}`}
+        />
+      </td>
+      <td className="p-1">
+        <input
+          className="w-full min-w-[7rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
+          value={row.cardNumber}
+          onChange={(e) =>
+            updateRow(globalIndex, "cardNumber", e.target.value.toUpperCase())
+          }
+          aria-label={`Card Number row ${globalIndex + 1}`}
+        />
+      </td>
+      <td className="px-2 py-1 text-xs text-zinc-500 dark:text-zinc-500">
+        {row.cardNumber
+          ? humanizeCardKey(row.cardNumber.trim().toUpperCase())
+          : "—"}
+      </td>
+      <td className="p-1">
+        <button
+          type="button"
+          onClick={() => removeRow(globalIndex)}
+          aria-label={`Remove row ${globalIndex + 1}`}
+          className="rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
+        >
+          Remove
+        </button>
+      </td>
+    </tr>
+  );
+});
+
+const ROWS_PER_PAGE = 52;
+
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<CardRow[]>([emptyRow()]);
@@ -26,7 +97,6 @@ export default function Home() {
   const [endOrderText, setEndOrderText] = useState("");
 
   const rowCount = rows.length;
-  const ROWS_PER_PAGE = 52;
   const [currentPage, setCurrentPage] = useState(0);
   const totalPages = Math.max(1, Math.ceil(rowCount / ROWS_PER_PAGE));
   const safePage = Math.min(currentPage, totalPages - 1);
@@ -65,6 +135,11 @@ export default function Home() {
   const onFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (file.size > 10_000_000) {
+      setLastMessage("File too large (max 10 MB).");
+      e.target.value = "";
+      return;
+    }
     setFileName(file.name.replace(/\.[^.]+$/, "") + ".csv");
     const reader = new FileReader();
     reader.onload = () => {
@@ -74,6 +149,7 @@ export default function Home() {
       setCurrentPage(0);
       setLastMessage(warnings.length > 0 ? warnings.join(" ") : null);
     };
+    reader.onerror = () => setLastMessage("Failed to read file.");
     reader.readAsText(file);
     e.target.value = "";
   }, []);
@@ -106,8 +182,6 @@ export default function Home() {
       `Appended ${result.rows.length} row(s) for trial "${trialId.trim() || "1"}".`,
     );
   }, [trialId, startOrderText, endOrderText]);
-
-  const headerCells = useMemo(() => [...CSV_HEADERS], []);
 
   return (
     <div className="mx-auto flex min-h-full max-w-6xl flex-col gap-8 px-4 py-10 sm:px-6">
@@ -233,8 +307,16 @@ export default function Home() {
       </div>
 
       {lastMessage && (
-        <p className="rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-300">
-          {lastMessage}
+        <p role="status" className="flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-300">
+          <span className="flex-1">{lastMessage}</span>
+          <button
+            type="button"
+            onClick={() => setLastMessage(null)}
+            aria-label="Dismiss"
+            className="shrink-0 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
+          >
+            ×
+          </button>
         </p>
       )}
 
@@ -242,7 +324,7 @@ export default function Home() {
         <table className="min-w-full border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
-              {headerCells.map((h) => (
+              {CSV_HEADERS.map((h) => (
                 <th
                   key={h}
                   className="whitespace-nowrap px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200"
@@ -260,59 +342,13 @@ export default function Home() {
             {pageRows.map((row, i) => {
               const globalIndex = pageOffset + i;
               return (
-                <tr
-                  key={globalIndex}
-                  className="border-b border-zinc-100 odd:bg-white even:bg-zinc-50/80 dark:border-zinc-800 dark:odd:bg-zinc-950 dark:even:bg-zinc-900/40"
-                >
-                  <td className="p-1">
-                    <input
-                      className="w-full min-w-[6rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
-                      value={row.trials}
-                      onChange={(e) => updateRow(globalIndex, "trials", e.target.value)}
-                      aria-label={`Trials row ${globalIndex + 1}`}
-                    />
-                  </td>
-                  <td className="p-1">
-                    <input
-                      className="w-full min-w-[7rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
-                      value={row.startPosition}
-                      onChange={(e) => updateRow(globalIndex, "startPosition", e.target.value)}
-                      aria-label={`start Position row ${globalIndex + 1}`}
-                    />
-                  </td>
-                  <td className="p-1">
-                    <input
-                      className="w-full min-w-[7rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
-                      value={row.endPosition}
-                      onChange={(e) => updateRow(globalIndex, "endPosition", e.target.value)}
-                      aria-label={`End position row ${globalIndex + 1}`}
-                    />
-                  </td>
-                  <td className="p-1">
-                    <input
-                      className="w-full min-w-[7rem] rounded-md border border-transparent bg-transparent px-2 py-1.5 font-mono text-sm outline-none focus:border-zinc-300 focus:bg-white dark:focus:border-zinc-600 dark:focus:bg-zinc-950"
-                      value={row.cardNumber}
-                      onChange={(e) =>
-                        updateRow(globalIndex, "cardNumber", e.target.value.toUpperCase())
-                      }
-                      aria-label={`Card Number row ${globalIndex + 1}`}
-                    />
-                  </td>
-                  <td className="px-2 py-1 text-xs text-zinc-500 dark:text-zinc-500">
-                    {row.cardNumber
-                      ? humanizeCardKey(row.cardNumber.trim().toUpperCase())
-                      : "—"}
-                  </td>
-                  <td className="p-1">
-                    <button
-                      type="button"
-                      onClick={() => removeRow(globalIndex)}
-                      className="rounded-md px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/40"
-                    >
-                      Remove
-                    </button>
-                  </td>
-                </tr>
+                <CardRowComponent
+                  key={row.id}
+                  row={row}
+                  globalIndex={globalIndex}
+                  updateRow={updateRow}
+                  removeRow={removeRow}
+                />
               );
             })}
           </tbody>

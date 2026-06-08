@@ -1,50 +1,39 @@
+import os
+from pathlib import Path
+
 from ultralytics import YOLO
 import cv2
-import numpy as np
 
-# Load a model
-model_path = "model-output/weights/best.pt"
-model = YOLO(model_path)  # pretrained YOLOv8n model
-
-# Run batched inference on a list of images
-# results = model(["datasets/Card-Detection-8/test/images/021407554_jpg.rf.d68568480c4c6d78df79181201aebfe0.jpg"])  # return a list of Results objects
-
-# # Process results list
-# for result in results:
-#     # boxes = result.boxes  # Boxes object for bounding box outputs
-#     masks = result.masks  # Masks object for segmentation masks outputs
-#     keypoints = result.keypoints  # Keypoints object for pose outputs
-#     probs = result.probs  # Probs object for classification outputs
-#     # obb = result.obb  # Oriented boxes object for OBB outputs
-#     result.show()  # display to screen
-
-def preprocess_image(image, input_shape):
-    # Resize image to the model's input size
-    # input_image = cv2.resize(image, input_shape)
-    # Convert image to RGB
-    input_image = cv2.cvtColor(input_image, cv2.COLOR_BGR2RGB)
-    # Normalize and convert to tensor
-    input_image = input_image / 255.0
-    input_image = np.transpose(input_image, (2, 0, 1)).astype(np.float32)
-    input_image = np.expand_dims(input_image, axis=0)
-    return input_image
+model_path = Path(os.environ.get("CARD_VISION_MODEL_PATH", "model-output/weights/best.pt"))
+if not model_path.is_file():
+    raise FileNotFoundError(f"Model weights not found: {model_path}")
+model = YOLO(str(model_path))
 
 
 def analyze_camera():
     cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("Error: could not open camera (device 0).")
+        return
+    try:
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-    while cap.isOpened():
-        ret, frame = cap.read()
+            try:
+                results = model(frame)
+                for result in results:
+                    cv2.imshow("Card-Vision", result.plot())
+            except Exception as e:
+                print(f"Inference error: {e}")
+                continue
 
-        results = model(frame, stream=True)
-        for result in results:
-            cv2.imshow("Card-Vision", result.plot())
-        
-        # cv2.imshow("ffff", frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-    cap.release()
-    cv2.destroyAllWindows()
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':

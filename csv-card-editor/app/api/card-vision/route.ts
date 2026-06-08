@@ -32,9 +32,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const imageBase64 = stripBase64Prefix(body.imageBase64?.trim() ?? "");
+  if (typeof body.imageBase64 !== "string") {
+    return NextResponse.json({ error: "imageBase64 must be a string." }, { status: 400 });
+  }
+
+  const imageBase64 = stripBase64Prefix(body.imageBase64.trim());
   if (!imageBase64) {
     return NextResponse.json({ error: "Missing imageBase64." }, { status: 400 });
+  }
+  if (imageBase64.length > 5_000_000) {
+    return NextResponse.json({ error: "Image too large (max ~5 MB base64)." }, { status: 413 });
   }
 
   const confidence =
@@ -68,6 +75,7 @@ export async function POST(req: Request) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(pyBody),
+      signal: AbortSignal.timeout(30_000),
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Network error";
@@ -86,11 +94,7 @@ export async function POST(req: Request) {
     json = JSON.parse(text) as unknown;
   } catch {
     return NextResponse.json(
-      {
-        error: "Card-vision server returned non-JSON.",
-        raw: text.slice(0, 500),
-        status: py.status,
-      },
+      { error: "Card-vision server returned non-JSON.", status: py.status },
       { status: 502 },
     );
   }
@@ -102,7 +106,6 @@ export async function POST(req: Request) {
           typeof (json as { detail?: string }).detail === "string"
             ? (json as { detail: string }).detail
             : `Card-vision server error (${py.status}).`,
-        detail: json,
       },
       { status: py.status >= 400 && py.status < 500 ? py.status : 502 },
     );

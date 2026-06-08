@@ -28,10 +28,10 @@ const RANK_WORD: Record<string, string> = {
 };
 
 const SUIT_SYM: Record<string, string> = {
-  "♠": "1",
-  "♥": "2",
-  "♦": "3",
-  "♣": "4",
+  "♠": "S",
+  "♥": "H",
+  "♦": "D",
+  "♣": "C",
 };
 
 function normalizeRank(r: string): string | null {
@@ -53,8 +53,8 @@ export function visionClassToAppKey(raw: string): string | null {
   let s = raw.trim();
   if (!s) return null;
 
-  for (const [sym, num] of Object.entries(SUIT_SYM)) {
-    s = s.replaceAll(sym, num === "1" ? "S" : num === "2" ? "H" : num === "3" ? "D" : "C");
+  for (const [sym, letter] of Object.entries(SUIT_SYM)) {
+    s = s.replaceAll(sym, letter);
   }
 
   s = s.replace(/\s+/g, " ").replace(/_/g, " ");
@@ -62,13 +62,6 @@ export function visionClassToAppKey(raw: string): string | null {
 
   const direct = parseCardToken(compact);
   if (direct) return direct.key;
-
-  const rs = compact.match(/^(10|[2-9]|[AJQK])([SHDC])$/);
-  if (rs) {
-    const rank = normalizeRank(rs[1]!);
-    const letter = rs[2]!;
-    if (rank && letter) return `${rank}${letter}`;
-  }
 
   const sr = compact.match(/^([SHDC])(10|[2-9]|[AJQK])$/);
   if (sr) {

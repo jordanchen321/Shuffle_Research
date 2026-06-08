@@ -1,11 +1,12 @@
 export const CSV_HEADERS = [
   "Trials",
-  "start Position",
-  "End position",
+  "Start Position",
+  "End Position",
   "Card Number",
 ] as const;
 
 export type CardRow = {
+  id: string;
   trials: string;
   startPosition: string;
   endPosition: string;
@@ -23,14 +24,19 @@ const HEADER_ALIASES: Record<string, keyof CardRow> = {
   cardnumber: "cardNumber",
 };
 
-function parseLine(line: string, delimiter: string): string[] {
+function parseLine(line: string, delimiter: string): { cells: string[]; unclosedQuote: boolean } {
   const out: string[] = [];
   let cur = "";
   let inQuotes = false;
   for (let i = 0; i < line.length; i++) {
     const c = line[i];
     if (c === '"') {
-      inQuotes = !inQuotes;
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
     } else if (c === delimiter && !inQuotes) {
       out.push(cur.trim());
       cur = "";
@@ -39,7 +45,7 @@ function parseLine(line: string, delimiter: string): string[] {
     }
   }
   out.push(cur.trim());
-  return out;
+  return { cells: out, unclosedQuote: inQuotes };
 }
 
 function detectDelimiter(headerLine: string): string {
@@ -62,7 +68,7 @@ function normalizeHeader(h: string): string {
 
 export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[] } {
   const warnings: string[] = [];
-  const normalized = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  const normalized = text.replace(/^﻿/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   if (!normalized) {
     return { rows: [], warnings: ["File was empty."] };
   }
@@ -70,10 +76,10 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
   const lines = normalized.split("\n").filter((l) => l.trim().length > 0);
   if (lines.length === 0) return { rows: [], warnings: ["No rows found."] };
 
-  const delimiter = detectDelimiter(lines[0]);
-  const headerCells = parseLine(lines[0], delimiter).map((c) =>
-    c.replace(/^"|"$/g, "").trim(),
-  );
+  const delimiter = detectDelimiter(lines[0]!);
+  const { cells: rawHeaderCells, unclosedQuote: headerUnclosed } = parseLine(lines[0]!, delimiter);
+  if (headerUnclosed) warnings.push("Unclosed quote in CSV header.");
+  const headerCells = rawHeaderCells.map((c) => c.replace(/^"|"$/g, "").trim());
 
   const colMap: Partial<Record<keyof CardRow, number>> = {};
   headerCells.forEach((raw, idx) => {
@@ -96,14 +102,15 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
 
   const rows: CardRow[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const cells = parseLine(lines[i], delimiter).map((c) =>
-      c.replace(/^"|"$/g, "").trim(),
-    );
+    const { cells: rawCells, unclosedQuote } = parseLine(lines[i]!, delimiter);
+    if (unclosedQuote) warnings.push(`Unclosed quote in row ${i}.`);
+    const cells = rawCells.map((c) => c.replace(/^"|"$/g, "").trim());
     const get = (key: keyof CardRow) => {
       const idx = colMap[key];
       return idx !== undefined ? (cells[idx] ?? "") : "";
     };
     rows.push({
+      id: crypto.randomUUID(),
       trials: get("trials"),
       startPosition: get("startPosition"),
       endPosition: get("endPosition"),
@@ -137,6 +144,7 @@ export function stringifyCardCsv(rows: CardRow[], delimiter: "," | "\t" = ","): 
 
 export function emptyRow(): CardRow {
   return {
+    id: crypto.randomUUID(),
     trials: "",
     startPosition: "",
     endPosition: "",
