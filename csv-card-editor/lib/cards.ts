@@ -1,7 +1,7 @@
 import type { CardRow } from "@/lib/csv";
 
 /** 1 = Spades, 2 = Hearts, 3 = Diamonds, 4 = Clubs */
-export const SUIT_LABELS: Record<number, string> = {
+const SUIT_LABELS: Record<number, string> = {
   1: "Spades",
   2: "Hearts",
   3: "Diamonds",
@@ -50,7 +50,7 @@ export function parseCardToken(raw: string): { suit: number; rank: string; key: 
   }
 
   const suit = parseInt(t[0]!, 10);
-  if (suit >= 1 && suit <= 4 && !Number.isNaN(suit)) {
+  if (suit >= 1 && suit <= 4) {
     const rankPart = t.slice(1);
     if (RANK_RE.test(rankPart)) {
       const letter = SUIT_NUM_TO_LETTER[suit];
@@ -235,9 +235,12 @@ export function rowsFromStartEndOrders(
     seenStart.add(k);
   });
   endKeys.forEach((k, idx) => {
-    if (seenEnd.has(k)) dupEnd.add(k);
+    if (seenEnd.has(k)) {
+      dupEnd.add(k);
+    } else {
+      endIndex.set(k, idx + 1);
+    }
     seenEnd.add(k);
-    endIndex.set(k, idx + 1);
   });
 
   if (dupStart.size > 0) {
@@ -259,7 +262,7 @@ export function rowsFromStartEndOrders(
     trialId,
     cardNumber: key,
     startPosition: String(idx + 1),
-    endPosition: String(endIndex.get(key)!),
+    endPosition: String(endIndex.get(key)!), // safe: multiset equality + no-duplicates checks above guarantee every startKey appears exactly once in endIndex
   }));
 
   return { ok: true, rows };

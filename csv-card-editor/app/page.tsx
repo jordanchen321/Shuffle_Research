@@ -1,10 +1,11 @@
 "use client";
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   humanizeCardKey,
   mergeVisionReadout,
   rowsFromStartEndOrders,
+  splitOrderText,
 } from "@/lib/cards";
 import { FanPhotoReader } from "@/components/FanPhotoReader";
 import { ThemeToggle } from "@/components/ThemeToggle";
@@ -17,32 +18,77 @@ import {
 } from "@/lib/csv";
 
 const RESEARCHER_NAMES = ["Sam", "Seena", "Jordan", "Caleb", "Peter"] as const;
-const TABLE_HEADERS = [...CSV_HEADERS, "label", ""] as const;
+const TABLE_HEADERS = [...CSV_HEADERS.slice(0, 4), "label", ...CSV_HEADERS.slice(4), ""] as const;
 
-function AlertModal({ message, onClose }: { message: string; onClose: () => void }) {
+function AlertModal({ message, onClose, onConfirm }: { message: string; onClose: () => void; onConfirm?: () => void }) {
+  const okRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const msgId = useId();
+
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    okRef.current?.focus();
+    return () => { prev?.focus(); };
+  }, []);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  useEffect(() => {
+    const el = dialogRef.current;
+    if (!el) return;
+    const FOCUSABLE = 'button,[href],input,select,textarea,[tabindex]:not([tabindex="-1"])';
+    const trap = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      const nodes = Array.from(el.querySelectorAll<HTMLElement>(FOCUSABLE));
+      const first = nodes[0];
+      const last = nodes[nodes.length - 1];
+      if (!first || !last) return;
+      if (e.shiftKey) {
+        if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+      } else {
+        if (document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    el.addEventListener("keydown", trap);
+    return () => el.removeEventListener("keydown", trap);
+  }, []);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      role="alertdialog"
+      aria-modal="true"
+      aria-label={onConfirm ? "Confirmation" : "Alert"}
+      aria-describedby={msgId}
       onClick={onClose}
     >
       <div
+        ref={dialogRef}
         className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
         onClick={(e) => e.stopPropagation()}
       >
-        <p className="mb-5 text-sm text-zinc-800 dark:text-zinc-200">{message}</p>
-        <div className="flex justify-end">
+        <p id={msgId} className="mb-5 text-sm text-zinc-800 dark:text-zinc-200">{message}</p>
+        <div className="flex justify-end gap-2">
+          {onConfirm && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg px-4 py-2 text-sm font-medium text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            >
+              Cancel
+            </button>
+          )}
           <button
+            ref={okRef}
             type="button"
-            onClick={onClose}
+            onClick={() => { try { onConfirm?.(); } finally { onClose(); } }}
             className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
           >
-            OK
+            {onConfirm ? "Continue" : "OK"}
           </button>
         </div>
       </div>
@@ -69,9 +115,14 @@ function computeAvailableSequences(rows: CardRow[]): SequenceOption[] {
     });
     const lastTrialId = trialIds[trialIds.length - 1] ?? "0";
     const lastTrialRows = seqRows.filter((r) => r.trialId === lastTrialId);
-    const sorted = [...lastTrialRows].sort(
-      (a, b) => parseInt(a.endPosition, 10) - parseInt(b.endPosition, 10),
-    );
+    const sorted = [...lastTrialRows].sort((a, b) => {
+      const na = parseInt(a.endPosition, 10);
+      const nb = parseInt(b.endPosition, 10);
+      if (isNaN(na) && isNaN(nb)) return 0;
+      if (isNaN(na)) return 1;
+      if (isNaN(nb)) return -1;
+      return na - nb;
+    });
     const lastEndOrder = sorted.map((r) => r.cardNumber).join(" ");
     const lastNum = parseInt(lastTrialId, 10);
     const nextTrialId = isNaN(lastNum) ? "" : String(lastNum + 1);
@@ -88,9 +139,8 @@ function computeAvailableSequences(rows: CardRow[]): SequenceOption[] {
 
 function generateSequenceId(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  let out = "";
-  for (let i = 0; i < 10; i++) out += chars[Math.floor(Math.random() * chars.length)];
-  return out;
+  const bytes = crypto.getRandomValues(new Uint8Array(10));
+  return Array.from(bytes, (b) => chars[b % chars.length]!).join("");
 }
 
 type CardRowProps = {
@@ -197,10 +247,23 @@ const CardRowComponent = memo(function CardRowComponent({
 
 const ROWS_PER_PAGE = 52;
 
+function hasAnyCell(r: CardRow): boolean {
+  return (
+    r.name.trim() !== "" ||
+    r.sequenceId.trim() !== "" ||
+    r.trialId.trim() !== "" ||
+    r.startPosition.trim() !== "" ||
+    r.endPosition.trim() !== "" ||
+    r.cardNumber.trim() !== ""
+  );
+}
+
 export default function Home() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const selectAllRef = useRef<HTMLInputElement>(null);
   const [rows, setRows] = useState<CardRow[]>([emptyRow()]);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [fileName, setFileName] = useState<string>("Name_wash_shuffle_data.csv");
   const [lastMessage, setLastMessage] = useState<string | null>(null);
@@ -218,6 +281,7 @@ export default function Home() {
   const [startOrderText, setStartOrderText] = useState("");
   const [endOrderText, setEndOrderText] = useState("");
   const [resumeSelectedId, setResumeSelectedId] = useState("");
+  const [confirmNewSequence, setConfirmNewSequence] = useState(false);
 
   const availableSequences = useMemo(() => computeAvailableSequences(rows), [rows]);
 
@@ -268,6 +332,10 @@ export default function Home() {
     setPageInputDraft(String(safePage + 1));
   }, [safePage]);
 
+  useEffect(() => {
+    setCurrentPage((p) => Math.min(p, totalPages - 1));
+  }, [totalPages]);
+
   const updateRow = useCallback(
     (index: number, field: keyof CardRow, value: string) => {
       setRows((prev) =>
@@ -282,6 +350,8 @@ export default function Home() {
   }, []);
 
   const removeRow = useCallback((index: number) => {
+    const removedId = rowsRef.current[index]?.id;
+    if (removedId) setSelectedIds((s) => { const ns = new Set(s); ns.delete(removedId); return ns; });
     setRows((prev) => prev.filter((_, i) => i !== index));
   }, []);
 
@@ -299,14 +369,22 @@ export default function Home() {
       setLastMessage("No rows selected — check the boxes next to the rows you want to update.");
       return;
     }
+    if (bulkSequenceId && bulkSequenceId.trim().length !== 10) {
+      setLastMessage(`Sequence ID must be exactly 10 characters (currently ${bulkSequenceId.trim().length}).`);
+      return;
+    }
+    if (bulkTrialId && (!/^\d+$/.test(bulkTrialId.trim()) || parseInt(bulkTrialId.trim(), 10) < 1)) {
+      setLastMessage("Trial ID must be a positive integer.");
+      return;
+    }
     setRows((prev) =>
       prev.map((r) => {
         if (!selectedIds.has(r.id)) return r;
         return {
           ...r,
           ...(bulkName ? { name: bulkName } : {}),
-          ...(bulkSequenceId ? { sequenceId: bulkSequenceId } : {}),
-          ...(bulkTrialId ? { trialId: bulkTrialId } : {}),
+          ...(bulkSequenceId ? { sequenceId: bulkSequenceId.trim() } : {}),
+          ...(bulkTrialId ? { trialId: bulkTrialId.trim() } : {}),
         };
       }),
     );
@@ -331,8 +409,18 @@ export default function Home() {
     reader.onload = () => {
       const text = String(reader.result ?? "");
       const { rows: parsed, warnings } = parseCardCsv(text);
-      setRows(parsed);
+      if (parsed.length > 10_000) {
+        setLastMessage(`File has ${parsed.length} rows — too large to load. Check this is a shuffle data CSV.`);
+        return;
+      }
+      setRows(parsed.length > 0 ? parsed : [emptyRow()]);
       setCurrentPage(0);
+      setBuildName("");
+      setBuildSequenceId("");
+      setTrialId("1");
+      setStartOrderText("");
+      setEndOrderText("");
+      setResumeSelectedId("");
       setLastMessage(warnings.length > 0 ? warnings.join(" ") : null);
     };
     reader.onerror = () => setLastMessage("Failed to read file.");
@@ -347,9 +435,12 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = fileName.endsWith(".csv") ? fileName : `${fileName}.csv`;
+    const safeName = fileName.replace(/[/\\]/g, "_").replace(/^\.+/, "") || "data";
+    a.download = safeName.endsWith(".csv") ? safeName : `${safeName}.csv`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     setLastMessage("Download started.");
   }, [rows, fileName]);
 
@@ -366,6 +457,23 @@ export default function Home() {
       setPopupMessage(`Sequence ID must be exactly 10 characters (currently ${buildSequenceId.trim().length}).`);
       return;
     }
+    if (!/^\d+$/.test(trialId.trim()) || parseInt(trialId.trim(), 10) < 1) {
+      setPopupMessage("Trial ID must be a positive integer.");
+      return;
+    }
+    const startTokens = splitOrderText(startOrderText);
+    const endTokens = splitOrderText(endOrderText);
+    const countErrors: string[] = [];
+    if (startTokens.length !== 52) {
+      countErrors.push(`Start order has ${startTokens.length} card${startTokens.length === 1 ? "" : "s"} — expected exactly 52.`);
+    }
+    if (endTokens.length !== 52) {
+      countErrors.push(`End order has ${endTokens.length} card${endTokens.length === 1 ? "" : "s"} — expected exactly 52.`);
+    }
+    if (countErrors.length > 0) {
+      setPopupMessage(countErrors.join(" "));
+      return;
+    }
     const result = rowsFromStartEndOrders(
       buildName.trim(),
       buildSequenceId.trim(),
@@ -374,11 +482,11 @@ export default function Home() {
       endOrderText,
     );
     if (!result.ok) {
-      setLastMessage(result.errors.join(" "));
+      setPopupMessage(result.errors.join(" "));
       return;
     }
     const existingCount = rows.filter(
-      (r) => r.trialId === trialId.trim() && r.sequenceId === buildSequenceId.trim(),
+      (r) => hasAnyCell(r) && r.trialId.trim() === trialId.trim() && r.sequenceId.trim() === buildSequenceId.trim(),
     ).length;
     if (existingCount + result.rows.length > 52) {
       setPopupMessage(
@@ -412,9 +520,20 @@ export default function Home() {
       setTrialId(seq.nextTrialId);
       setStartOrderText(seq.lastEndOrder);
       setEndOrderText("");
-      if (seq.name) setBuildName(seq.name);
+      setBuildName(seq.name);
     },
     [availableSequences],
+  );
+
+  const mergeVisionKeys = useCallback(
+    (target: "start" | "end", keys: string[]) => {
+      if (target === "start") {
+        setStartOrderText((prev) => mergeVisionReadout(prev, keys));
+      } else {
+        setEndOrderText((prev) => mergeVisionReadout(prev, keys));
+      }
+    },
+    [],
   );
 
   return (
@@ -436,13 +555,7 @@ export default function Home() {
       </header>
 
       <FanPhotoReader
-        onMergeVisionKeys={(target, keys) => {
-          if (target === "start") {
-            setStartOrderText((prev) => mergeVisionReadout(prev, keys));
-          } else {
-            setEndOrderText((prev) => mergeVisionReadout(prev, keys));
-          }
-        }}
+        onMergeVisionKeys={mergeVisionKeys}
         onStatus={setLastMessage}
       />
 
@@ -548,18 +661,23 @@ export default function Home() {
             <div className="relative">
               <input
                 value={buildSequenceId}
-                onChange={(e) => setBuildSequenceId(e.target.value)}
+                onChange={(e) => { setBuildSequenceId(e.target.value); if (resumeSelectedId) setResumeSelectedId(""); }}
                 className="w-full rounded-md border border-zinc-300 bg-white py-2 pl-3 pr-20 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                 placeholder="e.g. A3kX9mPq2T"
               />
               <button
                 type="button"
-                onClick={() => setBuildSequenceId(generateSequenceId())}
+                onClick={() => { setBuildSequenceId(generateSequenceId()); if (resumeSelectedId) setResumeSelectedId(""); }}
                 className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-xs font-medium text-zinc-500 hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
               >
                 Generate
               </button>
             </div>
+            {buildSequenceId.trim().length > 0 && (
+              <span className={`text-xs ${buildSequenceId.trim().length === 10 ? "text-zinc-400 dark:text-zinc-600" : "text-amber-600 dark:text-amber-400"}`}>
+                {buildSequenceId.trim().length}/10
+              </span>
+            )}
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Trial ID</span>
@@ -607,7 +725,7 @@ export default function Home() {
           </button>
           <button
             type="button"
-            onClick={startNewSequence}
+            onClick={() => setConfirmNewSequence(true)}
             className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
           >
             Start New Sequence
@@ -683,7 +801,7 @@ export default function Home() {
         <table className="min-w-full border-collapse text-left text-sm">
           <thead>
             <tr className="border-b border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
-              <th className="px-3 py-2">
+              <th scope="col" className="px-3 py-2">
                 <input
                   ref={selectAllRef}
                   type="checkbox"
@@ -693,9 +811,10 @@ export default function Home() {
                   className="h-4 w-4 cursor-pointer rounded border-zinc-300 accent-zinc-800 dark:accent-zinc-200"
                 />
               </th>
-              {TABLE_HEADERS.map((h, i) => (
+              {TABLE_HEADERS.map((h) => (
                 <th
-                  key={i}
+                  key={h || "actions"}
+                  scope="col"
                   className="whitespace-nowrap px-3 py-2 font-medium text-zinc-800 dark:text-zinc-200"
                 >
                   {h}
@@ -744,7 +863,7 @@ export default function Home() {
               onKeyDown={(e) => {
                 if (e.key === "Enter") commitPageInput(pageInputDraft, totalPages);
               }}
-              className="w-14 rounded-md border border-zinc-300 bg-white px-2 py-1 text-center font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+              className="w-14 sm:w-16 rounded-md border border-zinc-300 bg-white px-2 py-1 text-center font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
             />
             <span>of {totalPages}</span>
             <span className="text-zinc-400 dark:text-zinc-600">
@@ -765,17 +884,13 @@ export default function Home() {
       {popupMessage && (
         <AlertModal message={popupMessage} onClose={() => setPopupMessage(null)} />
       )}
+      {confirmNewSequence && (
+        <AlertModal
+          message="Start a new sequence? This generates a fresh sequence ID and resets the trial counter to 1. The name field is preserved."
+          onClose={() => setConfirmNewSequence(false)}
+          onConfirm={startNewSequence}
+        />
+      )}
     </div>
-  );
-}
-
-function hasAnyCell(r: CardRow): boolean {
-  return (
-    r.name.trim() !== "" ||
-    r.sequenceId.trim() !== "" ||
-    r.trialId.trim() !== "" ||
-    r.startPosition.trim() !== "" ||
-    r.endPosition.trim() !== "" ||
-    r.cardNumber.trim() !== ""
   );
 }

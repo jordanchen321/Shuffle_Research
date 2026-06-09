@@ -32,6 +32,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ error: "Request body must be a JSON object." }, { status: 400 });
+  }
+
   if (typeof body.imageBase64 !== "string") {
     return NextResponse.json({ error: "imageBase64 must be a string." }, { status: 400 });
   }
@@ -78,10 +82,15 @@ export async function POST(req: Request) {
       signal: AbortSignal.timeout(30_000),
     });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "Network error";
+    const isTimeout = e instanceof Error && e.name === "TimeoutError";
+    const msg = isTimeout
+      ? "Inference timed out after 30 s — try a smaller image or lower imgsz"
+      : e instanceof Error
+        ? e.message
+        : "Network error";
     return NextResponse.json(
       {
-        error: `Cannot reach card-vision server at ${base}: ${msg}`,
+        error: isTimeout ? msg : `Cannot reach card-vision server at ${base}: ${msg}`,
         hint: "From csv-card-editor run npm run vision:deps once, then npm run dev (starts Next + vision) or npm run vision-server.",
       },
       { status: 503 },
@@ -94,7 +103,7 @@ export async function POST(req: Request) {
     json = JSON.parse(text) as unknown;
   } catch {
     return NextResponse.json(
-      { error: "Card-vision server returned non-JSON.", status: py.status },
+      { error: "Card-vision server returned non-JSON." },
       { status: 502 },
     );
   }

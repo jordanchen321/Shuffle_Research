@@ -70,6 +70,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
   /** Running single-card label for consecutive-frame agreement (silent / live only). */
   const liveStableKeyRef = useRef<string | null>(null);
   const liveStableCountRef = useRef(0);
+  const visionTargetRef = useRef<VisionTarget>("start");
 
   const [visionTarget, setVisionTarget] = useState<VisionTarget>("start");
   const [confidence, setConfidence] = useState(0.22);
@@ -133,18 +134,31 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
     liveStableCountRef.current = 0;
   }, [visionTarget]);
 
+  useEffect(() => { visionTargetRef.current = visionTarget; }, [visionTarget]);
+
   const runInference = useCallback(
     async (imageBase64: string, opts?: { silent?: boolean }) => {
-      const res = await fetch("/api/card-vision", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          imageBase64,
-          confidence,
-          imgsz: Math.round(VISION_IMGSZ / 32) * 32,
-          augment: VISION_AUGMENT,
-        }),
-      });
+      let res: Response;
+      try {
+        res = await fetch("/api/card-vision", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            imageBase64,
+            confidence,
+            imgsz: Math.round(VISION_IMGSZ / 32) * 32,
+            augment: VISION_AUGMENT,
+          }),
+          signal: AbortSignal.timeout(35_000), // 5 s longer than the server's 30 s so the server's TimeoutError fires first with a clear message
+        });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Network error";
+        onStatus(`Cannot reach /api/card-vision: ${msg}. Is the dev server running?`);
+        setLastTokens(null);
+        setLastDetections([]);
+        setPendingPickKeys(null);
+        return;
+      }
       let data: Record<string, unknown>;
       try {
         data = (await res.json()) as Record<string, unknown>;
@@ -179,7 +193,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
         setDecodeNote(
           decoded.partial.map((p) => `${p.className}`).join(", ") || null,
         );
-        setLastTokens(null);
+        setLastTokens(decoded.keys.length > 0 ? decoded.keys.map((k) => k.toUpperCase()).join(" ") : null);
         setPendingPickKeys(null);
         return;
       }
@@ -204,7 +218,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
         if (!silent) {
           onStatus(
             [
-              `Multiple cards detected (${distinct.join(", ")}) — pick one below for ${visionTarget} order.`,
+              `Multiple cards detected (${distinct.join(", ")}) — pick one below for ${visionTargetRef.current} order.`,
               dedupeNote,
               decoded.warnings.length > 0 ? decoded.warnings.join(" ") : null,
             ]
@@ -232,13 +246,13 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
             liveStableKeyRef.current === k &&
             liveStableCountRef.current >= LIVE_STABLE_FRAMES
           ) {
-            onMergeVisionKeys(visionTarget, distinct);
+            onMergeVisionKeys(visionTargetRef.current, distinct);
             lastLiveMergedKeyRef.current = k;
             liveStableKeyRef.current = null;
             liveStableCountRef.current = 0;
           }
         } else {
-          onMergeVisionKeys(visionTarget, distinct);
+          onMergeVisionKeys(visionTargetRef.current, distinct);
         }
       }
       /* distinct.length === 0: do not reset live stability — empty frames between reads are normal */
@@ -258,13 +272,13 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
             ? [dedupeNote, decoded.warnings.join(" ")].filter(Boolean).join(" ")
             : distinct.length === 1
               ? (dedupeNote ??
-                  `Updated ${visionTarget} order with ${distinct[0]}. Edit text areas below if needed.`)
+                  `Updated ${visionTargetRef.current} order with ${distinct[0]}. Edit text areas below if needed.`)
               : (dedupeNote ??
                   "No cards detected in this frame. Lower min confidence or adjust the shot."),
         );
       }
     },
-    [confidence, onMergeVisionKeys, onStatus, visionTarget],
+    [confidence, onMergeVisionKeys, onStatus],
   );
 
   const stopCamera = useCallback(() => {
@@ -274,6 +288,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       videoRef.current.srcObject = null;
     }
     setCameraActive(false);
+    setPendingPickKeys(null);
     capturingRef.current = false;
     liveStartingRef.current = false;
     lastLiveMergedKeyRef.current = null;
@@ -406,7 +421,10 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
               max={1}
               step={0.05}
               value={confidence}
-              onChange={(e) => setConfidence(Number(e.target.value))}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isNaN(n)) setConfidence(Math.max(0, Math.min(1, n)));
+              }}
               className="max-w-32 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
             />
             <button
@@ -458,6 +476,8 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
         autoPlay
         playsInline
         muted
+        aria-hidden={!cameraActive}
+        aria-label={cameraActive ? "Live camera feed for card detection" : undefined}
         className={
           cameraActive
             ? "mb-3 max-h-72 min-h-55 w-full rounded-lg border border-zinc-200 bg-black object-contain dark:border-zinc-800"
@@ -524,11 +544,11 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
           <table className="w-full border-collapse text-left">
             <thead>
               <tr className="border-b border-zinc-200 bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900">
-                <th className="px-2 py-1">#</th>
-                <th className="px-2 py-1">Class</th>
-                <th className="px-2 py-1">→</th>
-                <th className="px-2 py-1">x</th>
-                <th className="px-2 py-1">conf</th>
+                <th scope="col" className="px-2 py-1">#</th>
+                <th scope="col" className="px-2 py-1">Class</th>
+                <th scope="col" className="px-2 py-1" aria-label="App key">→</th>
+                <th scope="col" className="px-2 py-1">x</th>
+                <th scope="col" className="px-2 py-1">conf</th>
               </tr>
             </thead>
             <tbody>

@@ -11,12 +11,11 @@ Optional env:
   CARD_VISION_TTA — if "1"/"true", default requests use test-time augmentation (slower, sometimes better)
 """
 
-from __future__ import annotations
-
 import base64
 import binascii
+import logging
 import os
-from pathlib import Path
+import threading
 from typing import Optional, Union
 
 import cv2
@@ -25,11 +24,12 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from ultralytics import YOLO
 
-ROOT = Path(__file__).resolve().parent
-DEFAULT_WEIGHTS = ROOT / "model-output" / "weights" / "best.pt"
-MODEL_PATH = Path(os.environ.get("CARD_VISION_MODEL_PATH", str(DEFAULT_WEIGHTS)))
+from _config import MODEL_PATH
 
-_DEFAULT_IMGSZ = int(os.environ.get("CARD_VISION_IMGSZ", "960"))
+try:
+    _DEFAULT_IMGSZ = int(os.environ.get("CARD_VISION_IMGSZ", "960"))
+except ValueError as exc:
+    raise ValueError("CARD_VISION_IMGSZ must be a valid integer") from exc
 _DEFAULT_TTA = os.environ.get("CARD_VISION_TTA", "").lower() in ("1", "true", "yes")
 
 
@@ -40,22 +40,23 @@ def _snap_imgsz(n: int) -> int:
 
 app = FastAPI(title="Card-Vision API", version="1.0.0")
 _model: Optional[YOLO] = None
+_model_lock = threading.Lock()
 
 
 def get_model() -> YOLO:
     global _model
-    if _model is None:
-        if not MODEL_PATH.is_file():
-            raise HTTPException(
-                status_code=500,
-                detail=f"Model weights not found: {MODEL_PATH}. Train or copy best.pt, or set CARD_VISION_MODEL_PATH.",
-            )
-        _model = YOLO(str(MODEL_PATH))
-    return _model
+    with _model_lock:
+        if _model is None:
+            if not MODEL_PATH.is_file():
+                raise RuntimeError(
+                    f"Model weights not found: {MODEL_PATH}. Train or copy best.pt, or set CARD_VISION_MODEL_PATH."
+                )
+            _model = YOLO(str(MODEL_PATH))
+        return _model
 
 
 class InferBody(BaseModel):
-    imageBase64: str = Field(..., max_length=5_000_000, description="JPEG/PNG as base64 (optional data URL prefix)")
+    imageBase64: str = Field(..., max_length=14_666_000, description="JPEG/PNG as base64 (optional data URL prefix)")
     confidence: float = Field(0.25, ge=0.0, le=1.0)
     imgsz: Optional[int] = Field(
         None,
@@ -73,7 +74,7 @@ class InferBody(BaseModel):
 def health() -> dict[str, Union[str, int, bool]]:
     return {
         "status": "ok",
-        "model_path": str(MODEL_PATH),
+        "model_path": MODEL_PATH.name,
         "weights_exist": MODEL_PATH.is_file(),
         "default_imgsz": _snap_imgsz(_DEFAULT_IMGSZ),
         "default_tta": _DEFAULT_TTA,
@@ -83,13 +84,15 @@ def health() -> dict[str, Union[str, int, bool]]:
 @app.post("/infer")
 def infer(body: InferBody) -> dict:
     raw = body.imageBase64.strip()
-    if "base64," in raw:
-        raw = raw.split("base64,", 1)[1]
+    if raw.startswith("data:") and ";base64," in raw:
+        raw = raw.split(";base64,", 1)[1]
     try:
-        data = base64.b64decode(raw)
+        data = base64.b64decode(raw, validate=True)
     except binascii.Error as exc:
         raise HTTPException(status_code=400, detail=f"Invalid base64: {exc}") from exc
 
+    if len(data) > 11_000_000:
+        raise HTTPException(status_code=413, detail="Image payload too large (max ~11 MB).")
     arr = np.frombuffer(data, dtype=np.uint8)
     im = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if im is None:
@@ -98,7 +101,14 @@ def infer(body: InferBody) -> dict:
     imgsz = _snap_imgsz(body.imgsz if body.imgsz is not None else _DEFAULT_IMGSZ)
     augment = _DEFAULT_TTA if body.augment is None else body.augment
 
-    model = get_model()
+    try:
+        model = get_model()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # model.predict() is called outside _model_lock intentionally — serialising inference
+    # would make concurrent requests queue behind each other (each call takes seconds).
+    # YOLO's predict() is stateless with respect to _model after initialisation.
     try:
         results = model.predict(
             source=im,
@@ -108,7 +118,10 @@ def infer(body: InferBody) -> dict:
             verbose=False,
         )
     except Exception as exc:
+        logging.exception("Inference failed")
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
+    if not results:
+        raise HTTPException(status_code=500, detail="Inference returned no results.")
     r = results[0]
     h, w = im.shape[:2]
 
@@ -120,7 +133,10 @@ def infer(body: InferBody) -> dict:
             cx, cy, bw, bh = xywh
             cls_id = int(b.cls[0])
             conf = float(b.conf[0])
-            label = str(names.get(cls_id, cls_id)) if names else str(cls_id)
+            label = str(names.get(cls_id, "")) if names else str(cls_id)
+            if not label:
+                logging.warning("Unknown class_id %d — skipping prediction", cls_id)
+                continue
             preds.append(
                 {
                     "x": cx,

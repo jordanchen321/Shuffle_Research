@@ -58,7 +58,9 @@ export function visionClassToAppKey(raw: string): string | null {
   }
 
   s = s.replace(/\s+/g, " ").replace(/_/g, " ");
-  const compact = s.replace(/\s/g, "").toUpperCase();
+  const compact = s.replace(/\s/g, "").toUpperCase()
+    .replace(/^T([SHDC])$/, "10$1")
+    .replace(/^([SHDC])T$/, "$110");
 
   const direct = parseCardToken(compact);
   if (direct) return direct.key;
@@ -85,16 +87,17 @@ export function visionClassToAppKey(raw: string): string | null {
     if (/^\d+$/.test(rRaw)) {
       const n = parseInt(rRaw, 10);
       if (n === 10) rank = "10";
+      else if (n === 1) rank = "A";
       else if (n >= 2 && n <= 9) rank = String(n);
     } else {
-      rank = normalizeRank(rRaw) ?? RANK_WORD[rRaw.toUpperCase()] ?? null;
+      rank = normalizeRank(rRaw);
     }
     if (rank && suit) return cardKeyFromSuitRank(Number(suit), rank) ?? null;
   }
 
   const us = compact.match(/^(ACE|KING|QUEEN|JACK|10|[2-9])(SPADES?|HEARTS?|DIAMONDS?|CLUBS?)$/);
   if (us) {
-    const rank = normalizeRank(us[1]!) ?? RANK_WORD[us[1]!];
+    const rank = normalizeRank(us[1]!);
     const suit = SUIT_WORD[us[2]!];
     if (rank && suit) return cardKeyFromSuitRank(Number(suit), rank) ?? null;
   }
@@ -102,10 +105,12 @@ export function visionClassToAppKey(raw: string): string | null {
   return null;
 }
 
+const X_SORT_THRESHOLD_PX = 2;
+
 export function sortDetectionsLeftToRight(d: RoboflowDetection[]): RoboflowDetection[] {
   return [...d].sort((a, b) => {
     const dx = a.x - b.x;
-    if (Math.abs(dx) > 2) return dx;
+    if (Math.abs(dx) > X_SORT_THRESHOLD_PX) return dx;
     return a.y - b.y;
   });
 }
@@ -123,10 +128,10 @@ export function dedupeDetectionsPerCardKey(detections: RoboflowDetection[]): Rob
 
 export type FanDecodeResult =
   | { ok: true; keys: string[]; warnings: string[] }
-  | { ok: false; errors: string[]; partial: { className: string; reason: string }[] };
+  | { ok: false; errors: string[]; keys: string[]; partial: { className: string; reason: string }[] };
 
 export function detectionsToOrderedKeys(predictions: RoboflowDetection[]): FanDecodeResult {
-  const sorted = sortDetectionsLeftToRight(predictions);
+  const sorted = dedupeDetectionsPerCardKey(predictions);
   if (sorted.length === 0) {
     return {
       ok: true,
@@ -158,16 +163,9 @@ export function detectionsToOrderedKeys(predictions: RoboflowDetection[]): FanDe
       errors: [
         `${partial.length} detection(s) could not be mapped. Edit class names in the model or enter those cards manually.`,
       ],
+      keys,
       partial,
     };
-  }
-
-  const seen = new Map<string, number>();
-  keys.forEach((k) => {
-    seen.set(k, (seen.get(k) ?? 0) + 1);
-  });
-  for (const [k, n] of seen) {
-    if (n > 1) warnings.push(`Card ${k} appears ${n} times in the fan readout.`);
   }
 
   return { ok: true, keys, warnings };
@@ -205,10 +203,5 @@ export function extractDetectionPredictions(data: unknown): RoboflowDetection[] 
 function pickPredictionsArray(o: Record<string, unknown>): unknown[] | null {
   const top = o.predictions;
   if (Array.isArray(top)) return top;
-  const images = o.image;
-  if (Array.isArray(images) && images[0] && typeof images[0] === "object") {
-    const p = (images[0] as Record<string, unknown>).predictions;
-    if (Array.isArray(p)) return p;
-  }
   return null;
 }

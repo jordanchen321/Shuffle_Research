@@ -92,7 +92,7 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
   const delimiter = detectDelimiter(lines[0]!);
   const { cells: rawHeaderCells, unclosedQuote: headerUnclosed } = parseLine(lines[0]!, delimiter);
   if (headerUnclosed) warnings.push("Unclosed quote in CSV header.");
-  const headerCells = rawHeaderCells.map((c) => c.replace(/^"|"$/g, "").trim());
+  const headerCells = rawHeaderCells.map((c) => c.trim());
 
   const colMap: Partial<Record<keyof CardRow, number>> = {};
   headerCells.forEach((raw, idx) => {
@@ -106,13 +106,18 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
     warnings.push(
       `Could not find columns: ${missing.join(", ")}. Expected headers like: ${CSV_HEADERS.join(", ")}`,
     );
+    return { rows: [], warnings };
   }
 
   const rows: CardRow[] = [];
   for (let i = 1; i < lines.length; i++) {
     const { cells: rawCells, unclosedQuote } = parseLine(lines[i]!, delimiter);
     if (unclosedQuote) warnings.push(`Unclosed quote in row ${i}.`);
-    const cells = rawCells.map((c) => c.replace(/^"|"$/g, "").trim());
+    if (rawCells.length < headerCells.length) {
+      warnings.push(`Row ${i}: only ${rawCells.length} of ${headerCells.length} columns present — required fields may be empty.`);
+    }
+    const cells = rawCells.map((c) => c.trim());
+    if (cells.every((c) => c === "")) continue;
     const get = (key: keyof CardRow) => {
       const idx = colMap[key];
       return idx !== undefined ? (cells[idx] ?? "") : "";
@@ -136,7 +141,7 @@ function escapeField(value: string, delimiter: string): string {
     value.includes('"') ||
     value.includes("\n") ||
     value.includes(delimiter) ||
-    value.includes("\t");
+    (value.includes("\t") && delimiter !== "\t");
   if (!needsQuote) return value;
   return `"${value.replace(/"/g, '""')}"`;
 }
@@ -149,7 +154,7 @@ export function stringifyCardCsv(rows: CardRow[], delimiter: "," | "\t" = ","): 
       .map((cell) => escapeField(cell, d))
       .join(d),
   );
-  return [header, ...body].join("\n");
+  return [header, ...body].join("\n") + "\n";
 }
 
 export function emptyRow(): CardRow {
