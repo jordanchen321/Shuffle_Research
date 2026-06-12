@@ -2,11 +2,11 @@
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
+  canonicalCardKey,
   CARD_FORMAT_HINT,
   describeCard,
   humanizeCardKey,
   mergeVisionReadout,
-  parseCardToken,
   parseOrderTokens,
   rowsFromStartEndOrders,
   splitOrderText,
@@ -176,10 +176,9 @@ function buildAppendWarnings(seqRows: CardRow[], trialNum: number, newRows: Card
       prevPositions.every((p) => Number.isInteger(p) && p >= 1 && p <= 52) &&
       new Set(prevPositions).size === 52;
     if (isPermutation) {
-      const canonical = (s: string) => parseCardToken(s)?.key ?? s.trim().toUpperCase();
       const prevEnd: string[] = new Array<string>(52);
       prevRows.forEach((r, i) => {
-        prevEnd[prevPositions[i]! - 1] = canonical(r.cardNumber);
+        prevEnd[prevPositions[i]! - 1] = canonicalCardKey(r.cardNumber);
       });
       const startKeys = newRows.map((r) => r.cardNumber);
       if (startKeys.some((k, i) => k !== prevEnd[i])) {
@@ -230,6 +229,104 @@ function buildAppendWarnings(seqRows: CardRow[], trialNum: number, newRows: Card
   }
 
   return warnings;
+}
+
+/**
+ * Confirmable warnings for a bulk fill of `selected` rows: existing values that will be
+ * overwritten, integrity of every (sequence, trial) group receiving rows (over 52 rows,
+ * duplicate cards), and source groups a partial move would leave incomplete. `rows` is the
+ * table before the fill, `next` after; `bulk` values arrive trimmed.
+ */
+function buildBulkFillWarnings(
+  rows: CardRow[],
+  next: CardRow[],
+  selected: CardRow[],
+  bulk: { name: string; sequenceId: string; trialId: string },
+): string[] {
+  const lines: string[] = [];
+
+  const countDiffering = (get: (r: CardRow) => string, value: string) =>
+    selected.filter((r) => get(r).trim() && get(r).trim() !== value).length;
+  const overwrites: string[] = [];
+  if (bulk.name) {
+    const n = countDiffering((r) => r.name, bulk.name);
+    if (n > 0) overwrites.push(`${n} row(s) with a different name`);
+  }
+  if (bulk.sequenceId) {
+    const n = countDiffering((r) => r.sequenceId, bulk.sequenceId);
+    if (n > 0) overwrites.push(`${n} row(s) with a different sequence ID`);
+  }
+  if (bulk.trialId) {
+    const n = countDiffering((r) => r.trialId, bulk.trialId);
+    if (n > 0) overwrites.push(`${n} row(s) with a different trial ID`);
+  }
+  if (overwrites.length > 0) {
+    lines.push(`Existing values will be overwritten: ${overwrites.join(", ")}.`);
+  }
+
+  // (sequence, trial) grouping with trial IDs normalized numerically so "02" and "2" count as
+  // one trial; rows with a blank sequence or trial are excluded from the integrity checks.
+  const groupKey = (r: CardRow) => {
+    const t = Number(r.trialId);
+    const trial = Number.isInteger(t) && t >= 1 ? String(t) : r.trialId.trim();
+    return `${r.sequenceId.trim()}\u0000${trial}`;
+  };
+  const groupByTrial = (list: CardRow[]) => {
+    const map = new Map<string, CardRow[]>();
+    for (const r of list) {
+      if (!hasAnyCell(r)) continue;
+      const key = groupKey(r);
+      const group = map.get(key);
+      if (group) group.push(r);
+      else map.set(key, [r]);
+    }
+    return map;
+  };
+  const beforeGroups = groupByTrial(rows);
+  const afterGroups = groupByTrial(next);
+  const selectedIdSet = new Set(selected.map((r) => r.id));
+
+  // Destination integrity on every group receiving selected rows: bulk fill must not quietly
+  // create what the append path prevents — over 52 rows per trial or duplicate cards.
+  const affected = new Set(next.filter((r) => selectedIdSet.has(r.id)).map(groupKey));
+  for (const key of affected) {
+    const [seq, trial] = key.split("\u0000");
+    if (!seq || !trial) continue;
+    const group = afterGroups.get(key) ?? [];
+    const label = `trial ${trial} in sequence "${seq}"`;
+    if (group.length > 52) {
+      lines.push(`After this change, ${label} would have ${group.length} rows — more than the 52 cards in a deck.`);
+    }
+    const seen = new Set<string>();
+    const dups = new Set<string>();
+    for (const r of group) {
+      if (!r.cardNumber.trim()) continue;
+      const k = canonicalCardKey(r.cardNumber);
+      if (seen.has(k)) dups.add(k);
+      seen.add(k);
+    }
+    if (dups.size > 0) {
+      const list = [...dups].map(describeCard);
+      const more = list.length > 10 ? `, …and ${list.length - 10} more` : "";
+      lines.push(`After this change, ${label} would contain duplicate cards: ${list.slice(0, 10).join(", ")}${more}.`);
+    }
+  }
+
+  // Source-group depletion: moving only part of a trial's rows to another sequence or trial
+  // number leaves the original trial incomplete. Moving a whole trial (0 rows left) is a
+  // legitimate relabel and stays silent.
+  const sources = new Set(selected.map(groupKey));
+  for (const key of sources) {
+    const [seq, trial] = key.split("\u0000");
+    if (!seq || !trial) continue;
+    const before = beforeGroups.get(key)?.length ?? 0;
+    const after = afterGroups.get(key)?.length ?? 0;
+    if (after > 0 && after < before) {
+      lines.push(`After this change, trial ${trial} in sequence "${seq}" would be left with only ${after} of its ${before} row(s).`);
+    }
+  }
+
+  return lines;
 }
 
 function generateSequenceId(): string {
@@ -381,6 +478,7 @@ export default function Home() {
   const [confirmRestoreStart, setConfirmRestoreStart] = useState(false);
   const [pendingAppend, setPendingAppend] = useState<{ message: string; rows: CardRow[] } | null>(null);
   const [pendingFile, setPendingFile] = useState<{ file: File; rowCount: number } | null>(null);
+  const [pendingBulkFill, setPendingBulkFill] = useState<{ message: string; banner: string; rows: CardRow[] } | null>(null);
 
   const availableSequences = useMemo(() => computeAvailableSequences(rows), [rows]);
   const startCardCount = useMemo(() => splitOrderText(startOrderText).length, [startOrderText]);
@@ -481,7 +579,10 @@ export default function Home() {
       setPopupMessage("Enter at least one field to apply.");
       return;
     }
-    if (selectedIds.size === 0) {
+    // Filter rather than checking selectedIds.size — selection can hold stale ids of blank
+    // placeholder rows that a previous append silently dropped.
+    const selected = rows.filter((r) => selectedIds.has(r.id));
+    if (selected.length === 0) {
       setPopupMessage("No rows selected — check the boxes next to the rows you want to update.");
       return;
     }
@@ -495,24 +596,34 @@ export default function Home() {
       setPopupMessage(trialError);
       return;
     }
-    setRows((prev) =>
-      prev.map((r) => {
-        if (!selectedIds.has(r.id)) return r;
-        return {
-          ...r,
-          ...(bulkName ? { name: bulkName } : {}),
-          ...(bulkSequenceId ? { sequenceId: bulkSequenceId.trim() } : {}),
-          ...(bulkTrialId ? { trialId: bulkTrialId.trim() } : {}),
-        };
-      }),
-    );
+    const next = rows.map((r) => {
+      if (!selectedIds.has(r.id)) return r;
+      return {
+        ...r,
+        ...(bulkName ? { name: bulkName } : {}),
+        ...(bulkSequenceId ? { sequenceId: bulkSequenceId.trim() } : {}),
+        ...(bulkTrialId ? { trialId: bulkTrialId.trim() } : {}),
+      };
+    });
     const parts = [
       bulkName && `name "${bulkName}"`,
-      bulkSequenceId && `sequence ID "${bulkSequenceId}"`,
-      bulkTrialId && `trial ID "${bulkTrialId}"`,
+      bulkSequenceId && `sequence ID "${bulkSequenceId.trim()}"`,
+      bulkTrialId && `trial ID "${bulkTrialId.trim()}"`,
     ].filter(Boolean).join(", ");
-    setLastMessage(`Applied ${parts} to ${selectedIds.size} row(s).`);
-  }, [bulkName, bulkSequenceId, bulkTrialId, selectedIds]);
+    const lines = [
+      `This will apply ${parts} to ${selected.length} selected row(s).`,
+      ...buildBulkFillWarnings(rows, next, selected, {
+        name: bulkName,
+        sequenceId: bulkSequenceId.trim(),
+        trialId: bulkTrialId.trim(),
+      }),
+    ];
+    setPendingBulkFill({
+      message: `${lines.join("\n\n")}\n\nContinue?`,
+      banner: `Applied ${parts} to ${selected.length} row(s).`,
+      rows: next,
+    });
+  }, [rows, bulkName, bulkSequenceId, bulkTrialId, selectedIds]);
 
   const loadFile = useCallback((file: File) => {
     if (file.size > 10_000_000) {
@@ -539,6 +650,9 @@ export default function Home() {
       setStartOrderText("");
       setEndOrderText("");
       setResumeSelectedId("");
+      // A bulk-fill confirm opened during the async read would restore pre-load rows on
+      // Continue — its snapshot is gone, so close it.
+      setPendingBulkFill(null);
       setLastMessage(null);
       if (warnings.length > 0) {
         setPopupMessage(`The file loaded with warnings:\n\n${warnings.join("\n")}`);
@@ -1125,6 +1239,16 @@ export default function Home() {
           message={pendingAppend.message}
           onClose={() => setPendingAppend(null)}
           onConfirm={() => commitAppend(pendingAppend.rows)}
+        />
+      )}
+      {pendingBulkFill && (
+        <AlertModal
+          message={pendingBulkFill.message}
+          onClose={() => setPendingBulkFill(null)}
+          onConfirm={() => {
+            setRows(pendingBulkFill.rows);
+            setLastMessage(pendingBulkFill.banner);
+          }}
         />
       )}
       {pendingFile && (

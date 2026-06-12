@@ -157,6 +157,9 @@ export function humanizeCardKey(key: string): string {
 
 export const describeCard = (k: string) => `${k} (${humanizeCardKey(k)})`;
 
+/** Canonical comparison key for a stored card token: parsed key if valid, else trimmed uppercase. */
+export const canonicalCardKey = (s: string): string => parseCardToken(s)?.key ?? s.trim().toUpperCase();
+
 export type GenerateResult =
   | { ok: true; rows: CardRow[] }
   | { ok: false; errors: string[] };
