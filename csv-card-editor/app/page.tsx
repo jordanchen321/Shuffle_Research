@@ -298,6 +298,7 @@ export default function Home() {
   const [endOrderText, setEndOrderText] = useState("");
   const [resumeSelectedId, setResumeSelectedId] = useState("");
   const [confirmNewSequence, setConfirmNewSequence] = useState(false);
+  const [confirmRestoreStart, setConfirmRestoreStart] = useState(false);
 
   const availableSequences = useMemo(() => computeAvailableSequences(rows), [rows]);
   const startCardCount = useMemo(() => splitOrderText(startOrderText).length, [startOrderText]);
@@ -561,6 +562,31 @@ export default function Home() {
     [availableSequences],
   );
 
+  const applyRestoreStartOrder = useCallback(() => {
+    const seq = availableSequences.find((s) => s.sequenceId === buildSequenceId.trim());
+    if (!seq?.lastEndOrder) return;
+    setStartOrderText(seq.lastEndOrder);
+    setLastMessage(`Start order restored from the end order of trial ${seq.lastTrialId}.`);
+  }, [availableSequences, buildSequenceId]);
+
+  const requestRestoreStartOrder = useCallback(() => {
+    const seqId = buildSequenceId.trim();
+    if (!seqId) {
+      setPopupMessage("Enter a sequence ID first — the start order is restored from that sequence's saved rows.");
+      return;
+    }
+    const seq = availableSequences.find((s) => s.sequenceId === seqId);
+    if (!seq?.lastEndOrder) {
+      setPopupMessage(`No saved trials for sequence "${seqId}" — nothing to restore.`);
+      return;
+    }
+    if (startOrderText.trim() && startOrderText.trim() !== seq.lastEndOrder) {
+      setConfirmRestoreStart(true);
+    } else {
+      applyRestoreStartOrder();
+    }
+  }, [availableSequences, buildSequenceId, startOrderText, applyRestoreStartOrder]);
+
   const mergeVisionKeys = useCallback(
     (target: "start" | "end", keys: string[]) => {
       if (target === "start") {
@@ -733,6 +759,11 @@ export default function Home() {
               setValue: setStartOrderText,
               count: startCardCount,
               placeholder: "e.g. AS AH 10S 4C KS …",
+              action: {
+                label: "Restore last end order",
+                title: "Refill from the saved end order of this sequence's last trial",
+                onClick: requestRestoreStartOrder,
+              },
             },
             {
               label: "End order (same cards, shuffled order)",
@@ -740,16 +771,29 @@ export default function Home() {
               setValue: setEndOrderText,
               count: endCardCount,
               placeholder: "e.g. KS AS 4C 10S AH …",
+              action: undefined,
             },
           ].map((field) => (
             <label key={field.label} className="flex min-h-35 flex-col gap-1">
               <span className="flex items-baseline justify-between text-xs font-medium text-zinc-600 dark:text-zinc-400">
                 <span>{field.label}</span>
-                {field.value.trim() && (
-                  <span className={`tabular-nums ${field.count === 52 ? "text-green-600 dark:text-green-400" : "text-zinc-400 dark:text-zinc-500"}`}>
-                    {field.count}/52
-                  </span>
-                )}
+                <span className="flex items-baseline gap-2">
+                  {field.action && (
+                    <button
+                      type="button"
+                      onClick={field.action.onClick}
+                      title={field.action.title}
+                      className="rounded-md border border-zinc-300 bg-white px-1.5 py-0.5 text-xs font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+                    >
+                      {field.action.label}
+                    </button>
+                  )}
+                  {field.value.trim() && (
+                    <span className={`tabular-nums ${field.count === 52 ? "text-green-600 dark:text-green-400" : "text-zinc-400 dark:text-zinc-500"}`}>
+                      {field.count}/52
+                    </span>
+                  )}
+                </span>
               </span>
               <textarea
                 value={field.value}
@@ -935,6 +979,13 @@ export default function Home() {
           message="Start a new sequence? This generates a fresh sequence ID and resets the trial counter to 1. The name field is preserved."
           onClose={() => setConfirmNewSequence(false)}
           onConfirm={startNewSequence}
+        />
+      )}
+      {confirmRestoreStart && (
+        <AlertModal
+          message="Replace the current Start order with the saved end order of this sequence's last trial?"
+          onClose={() => setConfirmRestoreStart(false)}
+          onConfirm={applyRestoreStartOrder}
         />
       )}
     </div>
