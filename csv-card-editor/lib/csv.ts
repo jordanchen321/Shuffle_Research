@@ -81,7 +81,7 @@ function normalizeHeader(h: string): string {
 
 export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[] } {
   const warnings: string[] = [];
-  const normalized = text.replace(/^﻿/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  const normalized = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
   if (!normalized) {
     return { rows: [], warnings: ["File was empty."] };
   }
@@ -90,9 +90,8 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
   if (lines.length === 0) return { rows: [], warnings: ["No rows found."] };
 
   const delimiter = detectDelimiter(lines[0]!);
-  const { cells: rawHeaderCells, unclosedQuote: headerUnclosed } = parseLine(lines[0]!, delimiter);
+  const { cells: headerCells, unclosedQuote: headerUnclosed } = parseLine(lines[0]!, delimiter);
   if (headerUnclosed) warnings.push("Unclosed quote in CSV header.");
-  const headerCells = rawHeaderCells.map((c) => c.trim());
 
   const colMap: Partial<Record<keyof CardRow, number>> = {};
   headerCells.forEach((raw, idx) => {
@@ -111,12 +110,11 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
 
   const rows: CardRow[] = [];
   for (let i = 1; i < lines.length; i++) {
-    const { cells: rawCells, unclosedQuote } = parseLine(lines[i]!, delimiter);
+    const { cells, unclosedQuote } = parseLine(lines[i]!, delimiter);
     if (unclosedQuote) warnings.push(`Unclosed quote in row ${i}.`);
-    if (rawCells.length < headerCells.length) {
-      warnings.push(`Row ${i}: only ${rawCells.length} of ${headerCells.length} columns present — required fields may be empty.`);
+    if (cells.length < headerCells.length) {
+      warnings.push(`Row ${i}: only ${cells.length} of ${headerCells.length} columns present — required fields may be empty.`);
     }
-    const cells = rawCells.map((c) => c.trim());
     if (cells.every((c) => c === "")) continue;
     const get = (key: keyof CardRow) => {
       const idx = colMap[key];
@@ -127,7 +125,7 @@ export function parseCardCsv(text: string): { rows: CardRow[]; warnings: string[
       name: get("name"),
       sequenceId: get("sequenceId"),
       trialId: get("trialId"),
-      cardNumber: get("cardNumber").trim().toUpperCase(),
+      cardNumber: get("cardNumber").toUpperCase(),
       startPosition: get("startPosition"),
       endPosition: get("endPosition"),
     });

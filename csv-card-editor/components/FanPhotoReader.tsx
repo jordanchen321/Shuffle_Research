@@ -1,22 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
-  dedupeDetectionsPerCardKey,
   detectionsToOrderedKeys,
   extractDetectionPredictions,
   visionClassToAppKey,
   type RoboflowDetection,
 } from "@/lib/fanVision";
 import { uniqueKeysInOrder } from "@/lib/cards";
+import { FIELD, SECONDARY_BTN } from "@/lib/ui";
 
 const LS_CONF = "csv_card_editor_card_vision_confidence";
 const LS_LIVE_MS = "csv_card_editor_card_vision_live_ms";
 const LS_VISION_TARGET = "csv_card_editor_vision_order_target";
 
-/** Fixed inference request shape (UI for these was removed). */
-const VISION_IMGSZ = 960;
-const VISION_AUGMENT = false;
+/**
+ * Frames are letterboxed server-side to its inference size (default 960, raisable via
+ * CARD_VISION_IMGSZ up to 2048) — 1280 keeps headroom over the default without paying
+ * full-HD JPEG encode cost on every live tick.
+ */
+const CAPTURE_MAX_WIDTH = 1280;
 
 /** Live auto-merge after this many lone-card reads of the same key in a row (filters single-frame false positives). */
 const LIVE_STABLE_FRAMES = 3;
@@ -59,11 +62,12 @@ function videoFrameToJpegBase64(
   return parts.length > 1 ? parts[1]! : dataUrl;
 }
 
-export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
+export const FanPhotoReader = memo(function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const capturingRef = useRef(false);
+  const inferAbortRef = useRef<AbortController | null>(null);
   const liveStartingRef = useRef(false);
   /** Last key we merged from live auto-read; ignore repeats until the camera shows a different key. */
   const lastLiveMergedKeyRef = useRef<string | null>(null);
@@ -138,20 +142,23 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
 
   const runInference = useCallback(
     async (imageBase64: string, opts?: { silent?: boolean }) => {
+      const inferController = new AbortController();
+      inferAbortRef.current = inferController;
       let res: Response;
       try {
         res = await fetch("/api/card-vision", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            imageBase64,
-            confidence,
-            imgsz: Math.round(VISION_IMGSZ / 32) * 32,
-            augment: VISION_AUGMENT,
-          }),
-          signal: AbortSignal.timeout(35_000), // 5 s longer than the server's 30 s so the server's TimeoutError fires first with a clear message
+          // imgsz/augment are deliberately not sent — the server's CARD_VISION_IMGSZ /
+          // CARD_VISION_TTA env defaults govern them.
+          body: JSON.stringify({ imageBase64, confidence }),
+          signal: AbortSignal.any([
+            inferController.signal,
+            AbortSignal.timeout(35_000), // 5 s longer than the server's 30 s so the server's TimeoutError fires first with a clear message
+          ]),
         });
       } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
         const msg = e instanceof Error ? e.message : "Network error";
         onStatus(`Cannot reach /api/card-vision: ${msg}. Is the dev server running?`);
         setLastTokens(null);
@@ -163,12 +170,16 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       try {
         data = (await res.json()) as Record<string, unknown>;
       } catch {
+        // The signal also aborts body reads — a stopped camera is not a server error.
+        if (inferController.signal.aborted) return;
         onStatus(`Server returned a non-JSON response (${res.status}).`);
         setLastTokens(null);
         setLastDetections([]);
         setPendingPickKeys(null);
         return;
       }
+      // A response that completed around abort time must not merge after the camera stopped.
+      if (inferController.signal.aborted) return;
       if (!res.ok) {
         const hint = typeof data.hint === "string" ? ` ${data.hint}` : "";
         const err =
@@ -184,12 +195,11 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
 
       const silent = opts?.silent === true;
       const rawPreds = extractDetectionPredictions(data);
-      const preds = dedupeDetectionsPerCardKey(rawPreds);
-      const merged = rawPreds.length - preds.length;
-      setLastDetections(preds);
-      const decoded = detectionsToOrderedKeys(preds);
+      const decoded = detectionsToOrderedKeys(rawPreds);
+      const merged = rawPreds.length - decoded.detections.length;
+      setLastDetections(decoded.detections);
       if (!decoded.ok) {
-        onStatus(decoded.errors.join(" "));
+        if (!silent) onStatus(decoded.errors.join(" "));
         setDecodeNote(
           decoded.partial.map((p) => `${p.className}`).join(", ") || null,
         );
@@ -282,6 +292,8 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
   );
 
   const stopCamera = useCallback(() => {
+    inferAbortRef.current?.abort();
+    inferAbortRef.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) {
@@ -296,15 +308,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
     liveStableCountRef.current = 0;
   }, []);
 
-  useEffect(() => {
-    return () => {
-      streamRef.current?.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
-      }
-    };
-  }, []);
+  useEffect(() => stopCamera, [stopCamera]);
 
   const beginLiveCamera = useCallback(async () => {
     if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
@@ -355,7 +359,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       if (!v) return;
       const b64 = videoFrameToJpegBase64(
         v,
-        1920,
+        CAPTURE_MAX_WIDTH,
         0.85,
         canvasRef.current ?? (canvasRef.current = document.createElement("canvas")),
       );
@@ -371,7 +375,10 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
     };
     void tick();
     const id = setInterval(() => void tick(), liveIntervalMs);
-    return () => clearInterval(id);
+    return () => {
+      clearInterval(id);
+      inferAbortRef.current?.abort();
+    };
   }, [cameraActive, liveIntervalMs, runInference]);
 
   return (
@@ -425,7 +432,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
                 const n = Number(e.target.value);
                 if (!Number.isNaN(n)) setConfidence(Math.max(0, Math.min(1, n)));
               }}
-              className="max-w-32 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              className={`${FIELD} max-w-32 px-3 py-2`}
             />
             <button
               type="button"
@@ -465,7 +472,7 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
           type="button"
           onClick={stopCamera}
           disabled={!cameraActive}
-          className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          className={`${SECONDARY_BTN} disabled:opacity-50`}
         >
           Stop live camera
         </button>
@@ -572,4 +579,4 @@ export function FanPhotoReader({ onMergeVisionKeys, onStatus }: Props) {
       )}
     </section>
   );
-}
+});

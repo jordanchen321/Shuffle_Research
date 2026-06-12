@@ -107,7 +107,7 @@ export function visionClassToAppKey(raw: string): string | null {
 
 const X_SORT_THRESHOLD_PX = 2;
 
-export function sortDetectionsLeftToRight(d: RoboflowDetection[]): RoboflowDetection[] {
+function sortDetectionsLeftToRight(d: RoboflowDetection[]): RoboflowDetection[] {
   return [...d].sort((a, b) => {
     const dx = a.x - b.x;
     if (Math.abs(dx) > X_SORT_THRESHOLD_PX) return dx;
@@ -115,7 +115,7 @@ export function sortDetectionsLeftToRight(d: RoboflowDetection[]): RoboflowDetec
   });
 }
 
-export function dedupeDetectionsPerCardKey(detections: RoboflowDetection[]): RoboflowDetection[] {
+function dedupeDetectionsPerCardKey(detections: RoboflowDetection[]): RoboflowDetection[] {
   const best = new Map<string, RoboflowDetection>();
   for (const d of detections) {
     const appKey = visionClassToAppKey(d.class);
@@ -127,9 +127,19 @@ export function dedupeDetectionsPerCardKey(detections: RoboflowDetection[]): Rob
 }
 
 export type FanDecodeResult =
-  | { ok: true; keys: string[]; warnings: string[] }
-  | { ok: false; errors: string[]; keys: string[]; partial: { className: string; reason: string }[] };
+  | { ok: true; keys: string[]; warnings: string[]; detections: RoboflowDetection[] }
+  | {
+      ok: false;
+      errors: string[];
+      keys: string[];
+      partial: { className: string; reason: string }[];
+      detections: RoboflowDetection[];
+    };
 
+/**
+ * Decode raw detections to ordered card keys. Dedupes per card key (best confidence wins)
+ * and sorts left-to-right internally; `detections` in the result is that deduped, sorted list.
+ */
 export function detectionsToOrderedKeys(predictions: RoboflowDetection[]): FanDecodeResult {
   const sorted = dedupeDetectionsPerCardKey(predictions);
   if (sorted.length === 0) {
@@ -139,6 +149,7 @@ export function detectionsToOrderedKeys(predictions: RoboflowDetection[]): FanDe
       warnings: [
         "No cards detected. Lower min confidence (try 0.15–0.28), check lighting, or confirm the vision server and model.",
       ],
+      detections: sorted,
     };
   }
   const keys: string[] = [];
@@ -165,16 +176,17 @@ export function detectionsToOrderedKeys(predictions: RoboflowDetection[]): FanDe
       ],
       keys,
       partial,
+      detections: sorted,
     };
   }
 
-  return { ok: true, keys, warnings };
+  return { ok: true, keys, warnings, detections: sorted };
 }
 
 export function extractDetectionPredictions(data: unknown): RoboflowDetection[] {
   if (!data || typeof data !== "object") return [];
   const o = data as Record<string, unknown>;
-  const raw = pickPredictionsArray(o);
+  const raw = Array.isArray(o.predictions) ? o.predictions : null;
   if (!raw) return [];
   const out: RoboflowDetection[] = [];
   for (const item of raw) {
@@ -198,10 +210,4 @@ export function extractDetectionPredictions(data: unknown): RoboflowDetection[] 
     }
   }
   return out;
-}
-
-function pickPredictionsArray(o: Record<string, unknown>): unknown[] | null {
-  const top = o.predictions;
-  if (Array.isArray(top)) return top;
-  return null;
 }

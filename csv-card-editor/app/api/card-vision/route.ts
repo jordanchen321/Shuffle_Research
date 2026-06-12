@@ -17,13 +17,6 @@ function stripBase64Prefix(b64: string): string {
 
 const DEFAULT_VISION = "http://127.0.0.1:8787";
 
-export async function OPTIONS() {
-  return new NextResponse(null, {
-    status: 204,
-    headers: { Allow: "POST, OPTIONS" },
-  });
-}
-
 export async function POST(req: Request) {
   let body: Body;
   try {
@@ -53,6 +46,7 @@ export async function POST(req: Request) {
       ? body.confidence
       : 0.25;
 
+  // Bounds and stride must stay in sync with server.py (InferBody / _snap_imgsz): 320–2048, multiples of 32.
   const imgsz =
     typeof body.imgsz === "number" &&
     Number.isFinite(body.imgsz) &&

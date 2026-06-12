@@ -16,6 +16,7 @@ import binascii
 import logging
 import os
 import threading
+from contextlib import asynccontextmanager
 from typing import Optional, Union
 
 import cv2
@@ -35,10 +36,10 @@ _DEFAULT_TTA = os.environ.get("CARD_VISION_TTA", "").lower() in ("1", "true", "y
 
 def _snap_imgsz(n: int) -> int:
     # YOLOv8 requires image dimensions as multiples of its stride (32); 320–2048 are practical bounds.
+    # Keep bounds in sync with csv-card-editor/app/api/card-vision/route.ts.
     s = max(320, min(2048, (int(n) // 32) * 32))
     return s
 
-app = FastAPI(title="Card-Vision API", version="1.0.0")
 _model: Optional[YOLO] = None
 _model_lock = threading.Lock()
 
@@ -53,6 +54,20 @@ def get_model() -> YOLO:
                 )
             _model = YOLO(str(MODEL_PATH))
         return _model
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    # Warm-load so the first /infer doesn't pay the multi-second model load (which can brush
+    # the proxy's 30 s timeout). On failure keep serving: /infer returns the specific error.
+    try:
+        get_model()
+    except Exception:
+        logging.exception("Model not loaded at startup; /infer will report the error")
+    yield
+
+
+app = FastAPI(title="Card-Vision API", version="1.0.0", lifespan=_lifespan)
 
 
 class InferBody(BaseModel):
@@ -103,20 +118,21 @@ def infer(body: InferBody) -> dict:
 
     try:
         model = get_model()
-    except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Model load failed: {exc}") from exc
 
-    # model.predict() is called outside _model_lock intentionally — serialising inference
-    # would make concurrent requests queue behind each other (each call takes seconds).
-    # YOLO's predict() is stateless with respect to _model after initialisation.
+    # Ultralytics YOLO objects are not thread-safe: predict() lazily creates and mutates the
+    # shared predictor (warmup, buffers, args), so concurrent calls on one instance can crash
+    # or mix results. FastAPI runs this sync endpoint on a threadpool, so serialise inference.
     try:
-        results = model.predict(
-            source=im,
-            conf=body.confidence,
-            imgsz=imgsz,
-            augment=augment,
-            verbose=False,
-        )
+        with _model_lock:
+            results = model.predict(
+                source=im,
+                conf=body.confidence,
+                imgsz=imgsz,
+                augment=augment,
+                verbose=False,
+            )
     except Exception as exc:
         logging.exception("Inference failed")
         raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc

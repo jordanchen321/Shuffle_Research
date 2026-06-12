@@ -2,11 +2,14 @@
 
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
+  CARD_FORMAT_HINT,
   humanizeCardKey,
   mergeVisionReadout,
+  parseOrderTokens,
   rowsFromStartEndOrders,
   splitOrderText,
 } from "@/lib/cards";
+import { FIELD, SECONDARY_BTN } from "@/lib/ui";
 import { FanPhotoReader } from "@/components/FanPhotoReader";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import {
@@ -19,6 +22,16 @@ import {
 
 const RESEARCHER_NAMES = ["Sam", "Seena", "Jordan", "Caleb", "Peter"] as const;
 const TABLE_HEADERS = [...CSV_HEADERS.slice(0, 4), "label", ...CSV_HEADERS.slice(4), ""] as const;
+
+function sequenceIdError(value: string): string | null {
+  const len = value.trim().length;
+  return len === 10 ? null : `Sequence ID must be exactly 10 characters (currently ${len}).`;
+}
+
+function trialIdError(value: string): string | null {
+  const t = value.trim();
+  return /^\d+$/.test(t) && parseInt(t, 10) >= 1 ? null : "Trial ID must be a positive integer.";
+}
 
 function AlertModal({ message, onClose, onConfirm }: { message: string; onClose: () => void; onConfirm?: () => void }) {
   const okRef = useRef<HTMLButtonElement>(null);
@@ -105,9 +118,14 @@ type SequenceOption = {
 };
 
 function computeAvailableSequences(rows: CardRow[]): SequenceOption[] {
-  const ids = [...new Set(rows.map((r) => r.sequenceId).filter(Boolean))];
-  return ids.map((seqId) => {
-    const seqRows = rows.filter((r) => r.sequenceId === seqId);
+  const bySequence = new Map<string, CardRow[]>();
+  for (const r of rows) {
+    if (!r.sequenceId) continue;
+    const group = bySequence.get(r.sequenceId);
+    if (group) group.push(r);
+    else bySequence.set(r.sequenceId, [r]);
+  }
+  return [...bySequence].map(([seqId, seqRows]) => {
     const trialIds = [...new Set(seqRows.map((r) => r.trialId))];
     trialIds.sort((a, b) => {
       const na = parseInt(a, 10), nb = parseInt(b, 10);
@@ -167,7 +185,7 @@ const CardRowComponent = memo(function CardRowComponent({
       <td className="px-3 py-1">
         <input
           type="checkbox"
-          checked={isSelected ?? false}
+          checked={isSelected}
           onChange={() => onToggleSelect(row.id)}
           aria-label={`Select row ${globalIndex + 1}`}
           className="h-4 w-4 cursor-pointer rounded border-zinc-300 accent-zinc-800 dark:accent-zinc-200"
@@ -211,9 +229,7 @@ const CardRowComponent = memo(function CardRowComponent({
         />
       </td>
       <td className="px-2 py-1 text-xs text-zinc-500 dark:text-zinc-500">
-        {row.cardNumber
-          ? humanizeCardKey(row.cardNumber.trim().toUpperCase())
-          : "—"}
+        {row.cardNumber ? humanizeCardKey(row.cardNumber) : "—"}
       </td>
       <td className="p-1">
         <input
@@ -284,13 +300,15 @@ export default function Home() {
   const [confirmNewSequence, setConfirmNewSequence] = useState(false);
 
   const availableSequences = useMemo(() => computeAvailableSequences(rows), [rows]);
+  const startCardCount = useMemo(() => splitOrderText(startOrderText).length, [startOrderText]);
+  const endCardCount = useMemo(() => splitOrderText(endOrderText).length, [endOrderText]);
 
   const rowCount = rows.length;
   const [currentPage, setCurrentPage] = useState(0);
   const totalPages = Math.max(1, Math.ceil(rowCount / ROWS_PER_PAGE));
   const safePage = Math.min(currentPage, totalPages - 1);
   const pageOffset = safePage * ROWS_PER_PAGE;
-  const pageRows = rows.slice(pageOffset, pageOffset + ROWS_PER_PAGE);
+  const pageRows = useMemo(() => rows.slice(pageOffset, pageOffset + ROWS_PER_PAGE), [rows, pageOffset]);
   const [pageInputDraft, setPageInputDraft] = useState(String(safePage + 1));
 
   const allPageSelected = pageRows.length > 0 && pageRows.every((r) => selectedIds.has(r.id));
@@ -312,18 +330,23 @@ export default function Home() {
   const toggleSelectAll = useCallback(() => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (allPageSelected) {
+      const allSelected = pageRows.length > 0 && pageRows.every((r) => prev.has(r.id));
+      if (allSelected) {
         pageRows.forEach((r) => next.delete(r.id));
       } else {
         pageRows.forEach((r) => next.add(r.id));
       }
       return next;
     });
-  }, [allPageSelected, pageRows]);
+  }, [pageRows]);
 
-  const commitPageInput = useCallback((draft: string, pages: number) => {
+  const commitPageInput = useCallback((draft: string, pages: number, current: number) => {
     const n = parseInt(draft, 10);
-    const clamped = Number.isNaN(n) ? 0 : Math.min(pages - 1, Math.max(0, n - 1));
+    if (Number.isNaN(n)) {
+      setPageInputDraft(String(current + 1));
+      return;
+    }
+    const clamped = Math.min(pages - 1, Math.max(0, n - 1));
     setCurrentPage(clamped);
     setPageInputDraft(String(clamped + 1));
   }, []);
@@ -369,12 +392,14 @@ export default function Home() {
       setLastMessage("No rows selected — check the boxes next to the rows you want to update.");
       return;
     }
-    if (bulkSequenceId && bulkSequenceId.trim().length !== 10) {
-      setLastMessage(`Sequence ID must be exactly 10 characters (currently ${bulkSequenceId.trim().length}).`);
+    const seqError = bulkSequenceId ? sequenceIdError(bulkSequenceId) : null;
+    if (seqError) {
+      setLastMessage(seqError);
       return;
     }
-    if (bulkTrialId && (!/^\d+$/.test(bulkTrialId.trim()) || parseInt(bulkTrialId.trim(), 10) < 1)) {
-      setLastMessage("Trial ID must be a positive integer.");
+    const trialError = bulkTrialId ? trialIdError(bulkTrialId) : null;
+    if (trialError) {
+      setLastMessage(trialError);
       return;
     }
     setRows((prev) =>
@@ -414,6 +439,7 @@ export default function Home() {
         return;
       }
       setRows(parsed.length > 0 ? parsed : [emptyRow()]);
+      setSelectedIds(new Set());
       setCurrentPage(0);
       setBuildName("");
       setBuildSequenceId("");
@@ -453,12 +479,14 @@ export default function Home() {
       setPopupMessage(`Please fill in the following required fields: ${missing.join(", ")}.`);
       return;
     }
-    if (buildSequenceId.trim().length !== 10) {
-      setPopupMessage(`Sequence ID must be exactly 10 characters (currently ${buildSequenceId.trim().length}).`);
+    const seqError = sequenceIdError(buildSequenceId);
+    if (seqError) {
+      setPopupMessage(seqError);
       return;
     }
-    if (!/^\d+$/.test(trialId.trim()) || parseInt(trialId.trim(), 10) < 1) {
-      setPopupMessage("Trial ID must be a positive integer.");
+    const trialError = trialIdError(trialId);
+    if (trialError) {
+      setPopupMessage(trialError);
       return;
     }
     const startTokens = splitOrderText(startOrderText);
@@ -471,7 +499,12 @@ export default function Home() {
       countErrors.push(`End order has ${endTokens.length} card${endTokens.length === 1 ? "" : "s"} — expected exactly 52.`);
     }
     if (countErrors.length > 0) {
-      setPopupMessage(countErrors.join(" "));
+      const invalidErrors = [
+        ...parseOrderTokens(startTokens, "Start").errors,
+        ...parseOrderTokens(endTokens, "End").errors,
+      ];
+      if (invalidErrors.length > 0) invalidErrors.push(CARD_FORMAT_HINT);
+      setPopupMessage([...countErrors, ...invalidErrors].join(" "));
       return;
     }
     const result = rowsFromStartEndOrders(
@@ -489,9 +522,12 @@ export default function Home() {
       (r) => hasAnyCell(r) && r.trialId.trim() === trialId.trim() && r.sequenceId.trim() === buildSequenceId.trim(),
     ).length;
     if (existingCount + result.rows.length > 52) {
-      setPopupMessage(
-        `This would create ${existingCount + result.rows.length} rows for trial "${trialId.trim()}" in sequence "${buildSequenceId.trim()}" — the maximum is 52 (one per card).`,
-      );
+      if (existingCount >= 52) {
+        const nextNum = parseInt(trialId.trim(), 10);
+        setPopupMessage(`Trial "${trialId.trim()}" in sequence "${buildSequenceId.trim()}" is already complete. Did you mean trial ${nextNum + 1}?`);
+      } else {
+        setPopupMessage(`Trial "${trialId.trim()}" in sequence "${buildSequenceId.trim()}" already has ${existingCount} row(s) — appending would exceed the 52-row limit.`);
+      }
       return;
     }
     setRows((prev) => [...prev.filter(hasAnyCell), ...result.rows]);
@@ -573,7 +609,7 @@ export default function Home() {
             <select
               value={bulkName}
               onChange={(e) => setBulkName(e.target.value)}
-              className="cursor-pointer rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              className={`${FIELD} cursor-pointer px-3 py-2`}
             >
               <option value="">— select —</option>
               {RESEARCHER_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
@@ -585,7 +621,7 @@ export default function Home() {
               <input
                 value={bulkSequenceId}
                 onChange={(e) => setBulkSequenceId(e.target.value)}
-                className="w-full rounded-md border border-zinc-300 bg-white py-2 pl-3 pr-20 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                className={`${FIELD} w-full py-2 pl-3 pr-20`}
                 placeholder="e.g. A3kX9mPq2T"
               />
               <button
@@ -602,7 +638,7 @@ export default function Home() {
             <input
               value={bulkTrialId}
               onChange={(e) => setBulkTrialId(e.target.value)}
-              className="rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              className={`${FIELD} px-3 py-2`}
               placeholder="e.g. 1"
             />
           </label>
@@ -610,7 +646,7 @@ export default function Home() {
             <button
               type="button"
               onClick={applyBulkFill}
-              className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+              className={SECONDARY_BTN}
             >
               Apply to selected rows{selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
             </button>
@@ -632,7 +668,7 @@ export default function Home() {
               <select
                 value={resumeSelectedId}
                 onChange={(e) => handleResumeSequence(e.target.value)}
-                className="cursor-pointer rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                className={`${FIELD} cursor-pointer px-3 py-2`}
               >
                 <option value="">— or start fresh below —</option>
                 {availableSequences.map((s) => (
@@ -650,7 +686,7 @@ export default function Home() {
             <select
               value={buildName}
               onChange={(e) => setBuildName(e.target.value)}
-              className="cursor-pointer rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              className={`${FIELD} cursor-pointer px-3 py-2`}
             >
               <option value="">— select —</option>
               {RESEARCHER_NAMES.map((n) => <option key={n} value={n}>{n}</option>)}
@@ -662,7 +698,7 @@ export default function Home() {
               <input
                 value={buildSequenceId}
                 onChange={(e) => { setBuildSequenceId(e.target.value); if (resumeSelectedId) setResumeSelectedId(""); }}
-                className="w-full rounded-md border border-zinc-300 bg-white py-2 pl-3 pr-20 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+                className={`${FIELD} w-full py-2 pl-3 pr-20`}
                 placeholder="e.g. A3kX9mPq2T"
               />
               <button
@@ -684,49 +720,59 @@ export default function Home() {
             <input
               value={trialId}
               onChange={(e) => setTrialId(e.target.value)}
-              className="rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
+              className={`${FIELD} px-3 py-2`}
               placeholder="1"
             />
           </label>
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="flex min-h-35 flex-col gap-1">
-            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-              Start order (top → bottom, spaces or commas)
-            </span>
-            <textarea
-              value={startOrderText}
-              onChange={(e) => setStartOrderText(e.target.value)}
-              className="min-h-30 flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-              placeholder="e.g. AS AH 10S 4C KS …"
-              spellCheck={false}
-            />
-          </label>
-          <label className="flex min-h-35 flex-col gap-1">
-            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">
-              End order (same cards, shuffled order)
-            </span>
-            <textarea
-              value={endOrderText}
-              onChange={(e) => setEndOrderText(e.target.value)}
-              className="min-h-30 flex-1 rounded-md border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-              placeholder="e.g. KS AS 4C 10S AH …"
-              spellCheck={false}
-            />
-          </label>
+          {[
+            {
+              label: "Start order (top → bottom, spaces or commas)",
+              value: startOrderText,
+              setValue: setStartOrderText,
+              count: startCardCount,
+              placeholder: "e.g. AS AH 10S 4C KS …",
+            },
+            {
+              label: "End order (same cards, shuffled order)",
+              value: endOrderText,
+              setValue: setEndOrderText,
+              count: endCardCount,
+              placeholder: "e.g. KS AS 4C 10S AH …",
+            },
+          ].map((field) => (
+            <label key={field.label} className="flex min-h-35 flex-col gap-1">
+              <span className="flex items-baseline justify-between text-xs font-medium text-zinc-600 dark:text-zinc-400">
+                <span>{field.label}</span>
+                {field.value.trim() && (
+                  <span className={`tabular-nums ${field.count === 52 ? "text-green-600 dark:text-green-400" : "text-zinc-400 dark:text-zinc-500"}`}>
+                    {field.count}/52
+                  </span>
+                )}
+              </span>
+              <textarea
+                value={field.value}
+                onChange={(e) => field.setValue(e.target.value)}
+                className={`${FIELD} min-h-30 flex-1 px-3 py-2`}
+                placeholder={field.placeholder}
+                spellCheck={false}
+              />
+            </label>
+          ))}
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           <button
             type="button"
             onClick={appendFromOrders}
-            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            className={SECONDARY_BTN}
           >
             Append rows
           </button>
           <button
             type="button"
             onClick={() => setConfirmNewSequence(true)}
-            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            className={SECONDARY_BTN}
           >
             Start New Sequence
           </button>
@@ -744,14 +790,14 @@ export default function Home() {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          className={SECONDARY_BTN}
         >
           Open CSV
         </button>
         <button
           type="button"
           onClick={addRow}
-          className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+          className={SECONDARY_BTN}
         >
           Add row
         </button>
@@ -847,7 +893,7 @@ export default function Home() {
             type="button"
             onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
             disabled={safePage === 0}
-            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            className={`${SECONDARY_BTN} disabled:opacity-40`}
           >
             Previous
           </button>
@@ -859,9 +905,9 @@ export default function Home() {
               max={totalPages}
               value={pageInputDraft}
               onChange={(e) => setPageInputDraft(e.target.value)}
-              onBlur={() => commitPageInput(pageInputDraft, totalPages)}
+              onBlur={() => commitPageInput(pageInputDraft, totalPages, safePage)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") commitPageInput(pageInputDraft, totalPages);
+                if (e.key === "Enter") commitPageInput(pageInputDraft, totalPages, safePage);
               }}
               className="w-14 sm:w-16 rounded-md border border-zinc-300 bg-white px-2 py-1 text-center font-mono text-sm text-zinc-900 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
             />
@@ -874,7 +920,7 @@ export default function Home() {
             type="button"
             onClick={() => setCurrentPage((p) => Math.min(totalPages - 1, p + 1))}
             disabled={safePage === totalPages - 1}
-            className="rounded-lg border border-zinc-300 bg-white px-4 py-2 text-sm font-medium text-zinc-900 shadow-sm hover:bg-zinc-50 disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800"
+            className={`${SECONDARY_BTN} disabled:opacity-40`}
           >
             Next
           </button>

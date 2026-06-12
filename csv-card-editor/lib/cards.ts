@@ -45,7 +45,7 @@ export function parseCardToken(raw: string): { suit: number; rank: string; key: 
     const rank = mNew[1]!;
     const letter = mNew[2]!;
     const suit = SUIT_LETTER_TO_NUM[letter];
-    if (!suit) return null;
+    if (suit === undefined) return null;
     return { suit, rank, key: `${rank}${letter}` };
   }
 
@@ -148,22 +148,6 @@ export function mergeVisionReadout(prevLine: string, newKeys: string[]): string 
   return prev.join(" ");
 }
 
-function multiset<T>(keys: T[]): Map<T, number> {
-  const m = new Map<T, number>();
-  for (const k of keys) {
-    m.set(k, (m.get(k) ?? 0) + 1);
-  }
-  return m;
-}
-
-function multisetsEqual(a: Map<string, number>, b: Map<string, number>): boolean {
-  if (a.size !== b.size) return false;
-  for (const [k, v] of a) {
-    if (b.get(k) !== v) return false;
-  }
-  return true;
-}
-
 export function humanizeCardKey(key: string): string {
   const p = parseCardToken(key);
   if (!p) return key;
@@ -174,6 +158,32 @@ export function humanizeCardKey(key: string): string {
 export type GenerateResult =
   | { ok: true; rows: CardRow[] }
   | { ok: false; errors: string[] };
+
+export const CARD_FORMAT_HINT =
+  "Cards are rank + suit letter (e.g. AS, 10H, KD) or legacy suit 1–4 + rank (e.g. 1A, 110).";
+
+const MAX_TOKEN_ERRORS = 5;
+
+/** Parse raw order tokens to canonical keys, collecting one error per invalid token (capped at 5 per order). */
+export function parseOrderTokens(
+  raw: string[],
+  orderLabel: "Start" | "End",
+): { keys: string[]; errors: string[] } {
+  const keys: string[] = [];
+  const errors: string[] = [];
+  let overflow = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const p = parseCardToken(raw[i]!);
+    if (p) keys.push(p.key);
+    else if (errors.length < MAX_TOKEN_ERRORS) {
+      errors.push(`"${raw[i]}" is not a valid card in ${orderLabel} order (position ${i + 1}).`);
+    } else overflow++;
+  }
+  if (overflow > 0) {
+    errors.push(`…and ${overflow} more invalid token${overflow === 1 ? "" : "s"} in ${orderLabel} order.`);
+  }
+  return { keys, errors };
+}
 
 /**
  * One CSV row per card: start/end position = 1-based index in each list.
@@ -194,35 +204,15 @@ export function rowsFromStartEndOrders(
   if (endRaw.length === 0) errors.push("End order is empty.");
   if (errors.length) return { ok: false, errors };
 
-  const startKeys: string[] = [];
-  const endKeys: string[] = [];
-
-  for (let i = 0; i < startRaw.length; i++) {
-    const p = parseCardToken(startRaw[i]!);
-    if (!p)
-      errors.push(
-        `Start #${i + 1}: invalid token "${startRaw[i]}". Use rank + suit letter (e.g. AS, AD, 10H) or legacy 1–4 + rank (e.g. 1A, 110).`,
-      );
-    else startKeys.push(p.key);
-  }
-  for (let i = 0; i < endRaw.length; i++) {
-    const p = parseCardToken(endRaw[i]!);
-    if (!p)
-      errors.push(
-        `End #${i + 1}: invalid token "${endRaw[i]}". Use rank + suit letter (e.g. AS, AD, 10H) or legacy 1–4 + rank (e.g. 1A, 110).`,
-      );
-    else endKeys.push(p.key);
-  }
-  if (errors.length) return { ok: false, errors };
-
-  const startBag = multiset(startKeys);
-  const endBag = multiset(endKeys);
-  if (!multisetsEqual(startBag, endBag)) {
-    errors.push(
-      "Start and end orders must contain the same cards the same number of times (same multiset).",
-    );
+  const start = parseOrderTokens(startRaw, "Start");
+  const end = parseOrderTokens(endRaw, "End");
+  errors.push(...start.errors, ...end.errors);
+  if (errors.length) {
+    errors.push(CARD_FORMAT_HINT);
     return { ok: false, errors };
   }
+  const startKeys = start.keys;
+  const endKeys = end.keys;
 
   const endIndex = new Map<string, number>();
   const dupStart = new Set<string>();
@@ -255,6 +245,20 @@ export function rowsFromStartEndOrders(
   }
   if (errors.length) return { ok: false, errors };
 
+  // Both lists are duplicate-free past this point, so multiset equality reduces to set
+  // equality, and endIndex holds every end key exactly once.
+  if (startKeys.length !== endKeys.length || !startKeys.every((k) => endIndex.has(k))) {
+    errors.push(
+      "Start and end orders must contain the same cards the same number of times (same multiset).",
+    );
+    return { ok: false, errors };
+  }
+
+  if (startKeys.every((k, i) => k === endKeys[i])) {
+    errors.push("Start order and end order are identical — every card is in the same position. This is likely a copy-paste error.");
+    return { ok: false, errors };
+  }
+
   const rows: CardRow[] = startKeys.map((key, idx) => ({
     id: crypto.randomUUID(),
     name,
@@ -262,7 +266,7 @@ export function rowsFromStartEndOrders(
     trialId,
     cardNumber: key,
     startPosition: String(idx + 1),
-    endPosition: String(endIndex.get(key)!), // safe: multiset equality + no-duplicates checks above guarantee every startKey appears exactly once in endIndex
+    endPosition: String(endIndex.get(key)!), // safe: set equality + no-duplicates checks above guarantee every startKey appears exactly once in endIndex
   }));
 
   return { ok: true, rows };
