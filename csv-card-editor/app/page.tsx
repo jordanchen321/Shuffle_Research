@@ -3,8 +3,10 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   CARD_FORMAT_HINT,
+  describeCard,
   humanizeCardKey,
   mergeVisionReadout,
+  parseCardToken,
   parseOrderTokens,
   rowsFromStartEndOrders,
   splitOrderText,
@@ -81,10 +83,10 @@ function AlertModal({ message, onClose, onConfirm }: { message: string; onClose:
     >
       <div
         ref={dialogRef}
-        className="w-full max-w-sm rounded-xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
+        className="max-h-[80vh] w-full max-w-sm overflow-y-auto rounded-xl border border-zinc-200 bg-white p-6 shadow-xl dark:border-zinc-700 dark:bg-zinc-900"
         onClick={(e) => e.stopPropagation()}
       >
-        <p id={msgId} className="mb-5 text-sm text-zinc-800 dark:text-zinc-200">{message}</p>
+        <p id={msgId} className="mb-5 whitespace-pre-line text-sm text-zinc-800 dark:text-zinc-200">{message}</p>
         <div className="flex justify-end gap-2">
           {onConfirm && (
             <button
@@ -153,6 +155,81 @@ function computeAvailableSequences(rows: CardRow[]): SequenceOption[] {
       lastEndOrder,
     };
   });
+}
+
+/**
+ * Confirmable data-quality warnings for appending `newRows` as trial `trialNum` of a sequence:
+ * deck continuity with the previous trial, trial-number gaps, and researcher-name consistency.
+ * Trial IDs in `seqRows` are compared numerically so variants like "02" still match trial 2.
+ */
+function buildAppendWarnings(seqRows: CardRow[], trialNum: number, newRows: CardRow[], name: string): string[] {
+  const warnings: string[] = [];
+
+  // Deck continuity: this trial's start order must equal the previous trial's recorded end
+  // order — the deck is physically unchanged between trials of a sequence.
+  const prevRows = seqRows.filter((r) => Number(r.trialId) === trialNum - 1);
+  if (prevRows.length === 52) {
+    const prevPositions = prevRows.map((r) => Number(r.endPosition));
+    // Manual table edits can corrupt end positions; only compare when they form a real deck
+    // order (a permutation of 1–52), or the warning could name the wrong cards.
+    const isPermutation =
+      prevPositions.every((p) => Number.isInteger(p) && p >= 1 && p <= 52) &&
+      new Set(prevPositions).size === 52;
+    if (isPermutation) {
+      const canonical = (s: string) => parseCardToken(s)?.key ?? s.trim().toUpperCase();
+      const prevEnd: string[] = new Array<string>(52);
+      prevRows.forEach((r, i) => {
+        prevEnd[prevPositions[i]! - 1] = canonical(r.cardNumber);
+      });
+      const startKeys = newRows.map((r) => r.cardNumber);
+      if (startKeys.some((k, i) => k !== prevEnd[i])) {
+        const endKeys: string[] = new Array<string>(newRows.length);
+        for (const r of newRows) endKeys[parseInt(r.endPosition, 10) - 1] = r.cardNumber;
+        if (endKeys.every((k, i) => k === prevEnd[i])) {
+          warnings.push(
+            `Start and End look swapped — the End order matches the recorded end order of trial ${trialNum - 1}.`,
+          );
+        } else {
+          const mismatches: string[] = [];
+          let diffs = 0;
+          for (let i = 0; i < startKeys.length; i++) {
+            if (startKeys[i] !== prevEnd[i]) {
+              diffs++;
+              if (mismatches.length < 3) {
+                mismatches.push(`position ${i + 1}: trial ${trialNum - 1} ended with ${prevEnd[i]!}, start order has ${startKeys[i]!}`);
+              }
+            }
+          }
+          const more = diffs > 3 ? `\n…and ${diffs - 3} more` : "";
+          warnings.push(
+            `Start order doesn't match the recorded end order of trial ${trialNum - 1} — the deck should be unchanged between trials. Differs at ${diffs} of 52 positions:\n${mismatches.join("\n")}${more}`,
+          );
+        }
+      }
+    }
+  }
+
+  // Trial sequencing: catch trial-ID typos that would skip numbers.
+  if (seqRows.length === 0) {
+    if (trialNum > 1) {
+      warnings.push(`Trial ${trialNum} would be the first trial recorded for this sequence — sequences normally start at trial 1.`);
+    }
+  } else {
+    const trialNums = seqRows.map((r) => Number(r.trialId)).filter((n) => Number.isInteger(n) && n >= 1);
+    const lastTrial = trialNums.length > 0 ? Math.max(...trialNums) : NaN;
+    if (!isNaN(lastTrial) && trialNum > lastTrial + 1) {
+      warnings.push(`Trial ${trialNum} would leave a gap — the last recorded trial in this sequence is ${lastTrial}.`);
+    }
+  }
+
+  // Name consistency — temporary while each researcher collects into their own CSV;
+  // remove when the team merges all data into one CSV (see CLAUDE.md).
+  const existingNames = [...new Set(seqRows.map((r) => r.name.trim()).filter(Boolean))];
+  if (existingNames.length > 0 && !existingNames.includes(name)) {
+    warnings.push(`Rows in this sequence are named ${existingNames.join(", ")} — you're appending as ${name}.`);
+  }
+
+  return warnings;
 }
 
 function generateSequenceId(): string {
@@ -280,6 +357,9 @@ export default function Home() {
   const [rows, setRows] = useState<CardRow[]>([emptyRow()]);
   const rowsRef = useRef(rows);
   rowsRef.current = rows;
+  // Rows array identity at the last download/file-load; every mutation creates a new array,
+  // so identity inequality means there is data not yet saved to disk.
+  const savedRowsRef = useRef(rows);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [fileName, setFileName] = useState<string>("Name_wash_shuffle_data.csv");
   const [lastMessage, setLastMessage] = useState<string | null>(null);
@@ -299,6 +379,8 @@ export default function Home() {
   const [resumeSelectedId, setResumeSelectedId] = useState("");
   const [confirmNewSequence, setConfirmNewSequence] = useState(false);
   const [confirmRestoreStart, setConfirmRestoreStart] = useState(false);
+  const [pendingAppend, setPendingAppend] = useState<{ message: string; rows: CardRow[] } | null>(null);
+  const [pendingFile, setPendingFile] = useState<{ file: File; rowCount: number } | null>(null);
 
   const availableSequences = useMemo(() => computeAvailableSequences(rows), [rows]);
   const startCardCount = useMemo(() => splitOrderText(startOrderText).length, [startOrderText]);
@@ -360,6 +442,16 @@ export default function Home() {
     setCurrentPage((p) => Math.min(p, totalPages - 1));
   }, [totalPages]);
 
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (rowsRef.current === savedRowsRef.current || !rowsRef.current.some(hasAnyCell)) return;
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
   const updateRow = useCallback(
     (index: number, field: keyof CardRow, value: string) => {
       setRows((prev) =>
@@ -386,21 +478,21 @@ export default function Home() {
 
   const applyBulkFill = useCallback(() => {
     if (!bulkName && !bulkSequenceId && !bulkTrialId) {
-      setLastMessage("Enter at least one field to apply.");
+      setPopupMessage("Enter at least one field to apply.");
       return;
     }
     if (selectedIds.size === 0) {
-      setLastMessage("No rows selected — check the boxes next to the rows you want to update.");
+      setPopupMessage("No rows selected — check the boxes next to the rows you want to update.");
       return;
     }
     const seqError = bulkSequenceId ? sequenceIdError(bulkSequenceId) : null;
     if (seqError) {
-      setLastMessage(seqError);
+      setPopupMessage(seqError);
       return;
     }
     const trialError = bulkTrialId ? trialIdError(bulkTrialId) : null;
     if (trialError) {
-      setLastMessage(trialError);
+      setPopupMessage(trialError);
       return;
     }
     setRows((prev) =>
@@ -422,12 +514,9 @@ export default function Home() {
     setLastMessage(`Applied ${parts} to ${selectedIds.size} row(s).`);
   }, [bulkName, bulkSequenceId, bulkTrialId, selectedIds]);
 
-  const onFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const loadFile = useCallback((file: File) => {
     if (file.size > 10_000_000) {
-      setLastMessage("File too large (max 10 MB).");
-      e.target.value = "";
+      setPopupMessage("File not loaded — too large (max 10 MB).");
       return;
     }
     setFileName(file.name.replace(/\.[^.]+$/, "") + ".csv");
@@ -436,10 +525,12 @@ export default function Home() {
       const text = String(reader.result ?? "");
       const { rows: parsed, warnings } = parseCardCsv(text);
       if (parsed.length > 10_000) {
-        setLastMessage(`File has ${parsed.length} rows — too large to load. Check this is a shuffle data CSV.`);
+        setPopupMessage(`File not loaded — it has ${parsed.length} rows, too many to load. Check this is a shuffle data CSV.`);
         return;
       }
-      setRows(parsed.length > 0 ? parsed : [emptyRow()]);
+      const next = parsed.length > 0 ? parsed : [emptyRow()];
+      setRows(next);
+      savedRowsRef.current = next;
       setSelectedIds(new Set());
       setCurrentPage(0);
       setBuildName("");
@@ -448,12 +539,28 @@ export default function Home() {
       setStartOrderText("");
       setEndOrderText("");
       setResumeSelectedId("");
-      setLastMessage(warnings.length > 0 ? warnings.join(" ") : null);
+      setLastMessage(null);
+      if (warnings.length > 0) {
+        setPopupMessage(`The file loaded with warnings:\n\n${warnings.join("\n")}`);
+      }
     };
-    reader.onerror = () => setLastMessage("Failed to read file.");
+    reader.onerror = () => setPopupMessage("Failed to read file.");
     reader.readAsText(file);
-    e.target.value = "";
   }, []);
+
+  const onFile = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (rowsRef.current !== savedRowsRef.current) {
+      const rowCount = rowsRef.current.filter(hasAnyCell).length;
+      if (rowCount > 0) {
+        setPendingFile({ file, rowCount });
+        return;
+      }
+    }
+    loadFile(file);
+  }, [loadFile]);
 
   const downloadCsv = useCallback(() => {
     const blob = new Blob([stringifyCardCsv(rows, ",")], {
@@ -468,8 +575,18 @@ export default function Home() {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+    savedRowsRef.current = rows;
     setLastMessage("Download started.");
   }, [rows, fileName]);
+
+  const commitAppend = useCallback((newRows: CardRow[]) => {
+    setRows((prev) => [...prev.filter(hasAnyCell), ...newRows]);
+    setLastMessage(`Appended ${newRows.length} row(s) for trial "${trialId.trim()}".`);
+    setStartOrderText(endOrderText);
+    setEndOrderText("");
+    const nextNum = parseInt(trialId.trim(), 10);
+    if (!isNaN(nextNum)) setTrialId(String(nextNum + 1));
+  }, [trialId, endOrderText]);
 
   const appendFromOrders = useCallback(() => {
     const missing: string[] = [];
@@ -500,12 +617,26 @@ export default function Home() {
       countErrors.push(`End order has ${endTokens.length} card${endTokens.length === 1 ? "" : "s"} — expected exactly 52.`);
     }
     if (countErrors.length > 0) {
-      const invalidErrors = [
-        ...parseOrderTokens(startTokens, "Start").errors,
-        ...parseOrderTokens(endTokens, "End").errors,
-      ];
+      const start = parseOrderTokens(startTokens, "Start");
+      const end = parseOrderTokens(endTokens, "End");
+      const invalidErrors = [...start.errors, ...end.errors];
       if (invalidErrors.length > 0) invalidErrors.push(CARD_FORMAT_HINT);
-      setPopupMessage([...countErrors, ...invalidErrors].join(" "));
+      // When both orders parse cleanly with no duplicates and the other side is complete,
+      // the short side's missing cards are knowable — name them.
+      const hints: string[] = [];
+      if (invalidErrors.length === 0) {
+        const startSet = new Set(start.keys);
+        const endSet = new Set(end.keys);
+        if (startSet.size === start.keys.length && endSet.size === end.keys.length) {
+          if (start.keys.length < 52 && end.keys.length === 52) {
+            hints.push(`Missing from start order (compared to end): ${end.keys.filter((k) => !startSet.has(k)).map(describeCard).join(", ")}.`);
+          }
+          if (end.keys.length < 52 && start.keys.length === 52) {
+            hints.push(`Missing from end order (compared to start): ${start.keys.filter((k) => !endSet.has(k)).map(describeCard).join(", ")}.`);
+          }
+        }
+      }
+      setPopupMessage([...countErrors, ...hints, ...invalidErrors].join("\n"));
       return;
     }
     const result = rowsFromStartEndOrders(
@@ -516,28 +647,29 @@ export default function Home() {
       endOrderText,
     );
     if (!result.ok) {
-      setPopupMessage(result.errors.join(" "));
+      setPopupMessage(result.errors.join("\n"));
       return;
     }
-    const existingCount = rows.filter(
-      (r) => hasAnyCell(r) && r.trialId.trim() === trialId.trim() && r.sequenceId.trim() === buildSequenceId.trim(),
-    ).length;
+    const seqId = buildSequenceId.trim();
+    const trialNum = parseInt(trialId.trim(), 10);
+    const seqRows = rows.filter((r) => hasAnyCell(r) && r.sequenceId.trim() === seqId);
+    const existingCount = seqRows.filter((r) => Number(r.trialId) === trialNum).length;
     if (existingCount + result.rows.length > 52) {
       if (existingCount >= 52) {
-        const nextNum = parseInt(trialId.trim(), 10);
-        setPopupMessage(`Trial "${trialId.trim()}" in sequence "${buildSequenceId.trim()}" is already complete. Did you mean trial ${nextNum + 1}?`);
+        setPopupMessage(`Trial "${trialId.trim()}" in sequence "${seqId}" is already complete. Did you mean trial ${trialNum + 1}?`);
       } else {
-        setPopupMessage(`Trial "${trialId.trim()}" in sequence "${buildSequenceId.trim()}" already has ${existingCount} row(s) — appending would exceed the 52-row limit.`);
+        setPopupMessage(`Trial "${trialId.trim()}" in sequence "${seqId}" already has ${existingCount} row(s) — appending would exceed the 52-row limit.`);
       }
       return;
     }
-    setRows((prev) => [...prev.filter(hasAnyCell), ...result.rows]);
-    setLastMessage(`Appended ${result.rows.length} row(s) for trial "${trialId.trim()}".`);
-    setStartOrderText(endOrderText);
-    setEndOrderText("");
-    const nextNum = parseInt(trialId.trim(), 10);
-    if (!isNaN(nextNum)) setTrialId(String(nextNum + 1));
-  }, [buildName, buildSequenceId, trialId, startOrderText, endOrderText, rows]);
+
+    const warnings = buildAppendWarnings(seqRows, trialNum, result.rows, buildName.trim());
+    if (warnings.length > 0) {
+      setPendingAppend({ message: `${warnings.join("\n\n")}\n\nAppend anyway?`, rows: result.rows });
+      return;
+    }
+    commitAppend(result.rows);
+  }, [buildName, buildSequenceId, trialId, startOrderText, endOrderText, rows, commitAppend]);
 
   const startNewSequence = useCallback(() => {
     setBuildSequenceId(generateSequenceId());
@@ -986,6 +1118,20 @@ export default function Home() {
           message="Replace the current Start order with the saved end order of this sequence's last trial?"
           onClose={() => setConfirmRestoreStart(false)}
           onConfirm={applyRestoreStartOrder}
+        />
+      )}
+      {pendingAppend && (
+        <AlertModal
+          message={pendingAppend.message}
+          onClose={() => setPendingAppend(null)}
+          onConfirm={() => commitAppend(pendingAppend.rows)}
+        />
+      )}
+      {pendingFile && (
+        <AlertModal
+          message={`Loading "${pendingFile.file.name}" will replace the ${pendingFile.rowCount} row(s) currently in the table. Continue?`}
+          onClose={() => setPendingFile(null)}
+          onConfirm={() => loadFile(pendingFile.file)}
         />
       )}
     </div>

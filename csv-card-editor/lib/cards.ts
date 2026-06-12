@@ -155,6 +155,8 @@ export function humanizeCardKey(key: string): string {
   return `${p.rank} of ${suitName}`;
 }
 
+export const describeCard = (k: string) => `${k} (${humanizeCardKey(k)})`;
+
 export type GenerateResult =
   | { ok: true; rows: CardRow[] }
   | { ok: false; errors: string[] };
@@ -183,6 +185,34 @@ export function parseOrderTokens(
     errors.push(`…and ${overflow} more invalid token${overflow === 1 ? "" : "s"} in ${orderLabel} order.`);
   }
   return { keys, errors };
+}
+
+/**
+ * Duplicate-card error naming each duplicate's 1-based positions, plus the cards present in
+ * the other order but absent here — the likely intended entries for the duplicated slots.
+ */
+function duplicateCardsError(orderLabel: "start" | "end", keys: string[], otherKeys: Set<string>): string {
+  const positionsByKey = new Map<string, number[]>();
+  keys.forEach((k, i) => {
+    const positions = positionsByKey.get(k);
+    if (positions) positions.push(i + 1);
+    else positionsByKey.set(k, [i + 1]);
+  });
+  const details = [...positionsByKey]
+    .filter(([, positions]) => positions.length > 1)
+    .map(
+      ([k, positions]) =>
+        `${describeCard(k)} at positions ${positions.length === 2 ? positions.join(" and ") : positions.join(", ")}`,
+    )
+    .join("; ");
+  let msg = `Duplicate cards in ${orderLabel} order: ${details}.`;
+  const here = new Set(keys);
+  const otherLabel = orderLabel === "start" ? "end" : "start";
+  const missing = [...otherKeys].filter((k) => !here.has(k));
+  if (missing.length > 0) {
+    msg += ` Missing from ${orderLabel} order (compared to ${otherLabel}): ${missing.map(describeCard).join(", ")}.`;
+  }
+  return msg;
 }
 
 /**
@@ -234,23 +264,22 @@ export function rowsFromStartEndOrders(
   });
 
   if (dupStart.size > 0) {
-    errors.push(
-      `Duplicate cards in start order: ${[...dupStart].map((k) => `${k} (${humanizeCardKey(k)})`).join(", ")}.`,
-    );
+    errors.push(duplicateCardsError("start", startKeys, seenEnd));
   }
   if (dupEnd.size > 0) {
-    errors.push(
-      `Duplicate cards in end order: ${[...dupEnd].map((k) => `${k} (${humanizeCardKey(k)})`).join(", ")}.`,
-    );
+    errors.push(duplicateCardsError("end", endKeys, seenStart));
   }
   if (errors.length) return { ok: false, errors };
 
   // Both lists are duplicate-free past this point, so multiset equality reduces to set
   // equality, and endIndex holds every end key exactly once.
   if (startKeys.length !== endKeys.length || !startKeys.every((k) => endIndex.has(k))) {
-    errors.push(
-      "Start and end orders must contain the same cards the same number of times (same multiset).",
-    );
+    const onlyStart = startKeys.filter((k) => !seenEnd.has(k));
+    const onlyEnd = endKeys.filter((k) => !seenStart.has(k));
+    const parts = ["Start and end orders must contain exactly the same cards."];
+    if (onlyStart.length > 0) parts.push(`In start order but not end order: ${onlyStart.map(describeCard).join(", ")}.`);
+    if (onlyEnd.length > 0) parts.push(`In end order but not start order: ${onlyEnd.map(describeCard).join(", ")}.`);
+    errors.push(parts.join(" "));
     return { ok: false, errors };
   }
 
