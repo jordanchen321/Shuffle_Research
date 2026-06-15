@@ -32,16 +32,16 @@ Moreover, the versatility of this computer vision project opens up possibilities
 
 The Next.js app in `../csv-card-editor` calls this repo’s YOLO model through a small FastAPI server.
 
-1. Install Python deps (ideally in a venv) from this folder:
+1. Install Python deps into a venv from this folder (cross-platform; needs Python 3 on PATH):
 
-   `pip install -r requirements.txt`
+   `npm run install-deps`
 
 2. Ensure weights exist at `model-output/weights/best.pt`, or set env `CARD_VISION_MODEL_PATH` to your `best.pt`.
 
 3. Start the server:
 
-   `python -m uvicorn server:app --host 127.0.0.1 --port 8787`
+   `npm run server`
 
-   From `csv-card-editor` you can also run: `npm run vision-server`
+   From `csv-card-editor` you can also run: `npm run vision-server` (or `npm run dev` to start Next + vision together)
 
 4. In the browser, use **Fan photo (local YOLO)** on the CSV editor page. Optional env in `csv-card-editor/.env.local`: `CARD_VISION_SERVER_URL` if not using port 8787.

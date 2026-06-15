@@ -2,9 +2,7 @@
   "name": "card-vision",
   "private": true,
   "scripts": {
-    "install-deps": "python3 -m venv env && env/bin/python -m pip install -r requirements.txt",
-    "install-deps:py": "py -m pip install -r requirements.txt",
-    "server": "env/bin/python -m uvicorn server:app --host 127.0.0.1 --port 8787",
-    "server:py": "py -m uvicorn server:app --host 127.0.0.1 --port 8787"
+    "install-deps": "node scripts/vision.mjs install",
+    "server": "node scripts/vision.mjs server"
   }
 }

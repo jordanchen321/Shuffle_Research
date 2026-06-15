@@ -7,15 +7,14 @@ Research project studying wash card shuffle mechanics — specifically how indiv
 **First time only:**
 
 ```bash
-cd card-vision
-python3 -m venv env
-env/bin/pip install -r requirements.txt
-
-cd ../csv-card-editor
+cd csv-card-editor
 npm install
+npm run vision:deps
 ```
 
-**Run:**
+`vision:deps` creates the card-vision Python venv and installs its requirements (works on macOS, Linux, and Windows). Requires Python 3 on your PATH.
+
+**Every time after that, run:**
 
 ```bash
 cd csv-card-editor
