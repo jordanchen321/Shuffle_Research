@@ -12,7 +12,15 @@ npm install
 npm run vision:deps
 ```
 
-`vision:deps` creates the card-vision Python venv and installs its requirements (works on macOS, Linux, and Windows). Requires Python 3 on your PATH.
+`vision:deps` creates the card-vision Python venv and installs core requirements (ultralytics, opencv, numpy, etc.). Requires Python 3 on your PATH.
+
+**If the vision server fails to start** (missing uvicorn/fastapi error):
+```bash
+cd card-vision
+.\env\Scripts\pip install uvicorn fastapi pydantic  # Windows
+# or on macOS/Linux:
+./env/bin/pip install uvicorn fastapi pydantic
+```
 
 **Every time after that, run:**
 
@@ -23,9 +31,26 @@ npm run dev
 
 Starts the CSV editor at http://localhost:3000 and the card-vision backend at http://127.0.0.1:8787.
 
+To test the vision server independently:
+```bash
+cd card-vision
+.\env\Scripts\python main.py  # Opens camera with live detection
+# or in another terminal:
+python -m uvicorn server:app --host 127.0.0.1 --port 8787  # Starts API server
+```
+
 ---
 
-## Data model
+## Troubleshooting
+
+**"No module named uvicorn" when starting vision server:**
+- The server dependencies weren't installed by `vision:deps`
+- Fix: `cd card-vision && .\env\Scripts\pip install uvicorn fastapi pydantic`
+
+**"No module named ultralytics" or other missing packages:**
+- Reinstall core dependencies: `cd card-vision && .\env\Scripts\pip install ultralytics opencv-python-headless numpy torch torchvision`
+
+---
 
 Each row in the CSV represents one card in one trial:
 
