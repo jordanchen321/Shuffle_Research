@@ -32,6 +32,8 @@ Moreover, the versatility of this computer vision project opens up possibilities
 
 The Next.js app in `../csv-card-editor` calls this repo’s YOLO model through a small FastAPI server.
 
+**Important:** always use `npm run server` (or `npm run dev` from `csv-card-editor`) to start the vision server — never run `python` or `main.py` directly. The npm script manages the virtual environment and ensures all dependencies are installed.
+
 1. Install Python deps into a venv from this folder (cross-platform; needs Python 3 on PATH):
 
    `npm run install-deps`
