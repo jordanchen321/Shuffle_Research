@@ -3,8 +3,8 @@
 # Card-Vision
 This is a computer vision project using Python, OpenCV, YOLOv8, and PyTorch that accurately detects poker cards by their value and suit. Utilizing OpenCV for image processing and YOLOv8 for object detection, the system identifies and classifies cards in real-time. The project involved using Roboflow for dataset annotation and management, training a YOLOv8 model with PyTorch, and optimizing the model for deployment on various platforms.
 
-## To Use
-Run `main.py` and it will activate your first connected webcam device and from there the model is ready to be tested. Placing a card in frame will start to detect the card's suit and value. 
+## To Use (standalone demo)
+Run `main.py` to open a live webcam feed with card detection overlaid. This is a standalone demo — for the CSV editor integration, see the HTTP API section below.
 
 ## Model Quality
 ![alt text](model-output/results.png)
@@ -32,7 +32,7 @@ Moreover, the versatility of this computer vision project opens up possibilities
 
 The Next.js app in `../csv-card-editor` calls this repo’s YOLO model through a small FastAPI server.
 
-**Important:** always use `npm run server` (or `npm run dev` from `csv-card-editor`) to start the vision server — never run `python` or `main.py` directly. The npm script manages the virtual environment and ensures all dependencies are installed.
+**Important:** always use `npm run server` (or `npm run dev` from `csv-card-editor`) to start the API server — never invoke `python -m uvicorn` directly. The npm script manages the virtual environment and ensures all dependencies are installed.
 
 1. Install Python deps into a venv from this folder (cross-platform; needs Python 3 on PATH):
 

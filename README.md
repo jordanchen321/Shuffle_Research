@@ -45,10 +45,13 @@ python -m uvicorn server:app --host 127.0.0.1 --port 8787  # Starts API server
 
 **"No module named uvicorn" when starting vision server:**
 - The server dependencies weren't installed by `vision:deps`
-- Fix: `cd card-vision && .\env\Scripts\pip install uvicorn fastapi pydantic`
+- Fix (Windows): `cd card-vision && .\env\Scripts\pip install uvicorn fastapi pydantic`
+- Fix (macOS/Linux): `cd card-vision && ./env/bin/pip install uvicorn fastapi pydantic`
 
 **"No module named ultralytics" or other missing packages:**
-- Reinstall core dependencies: `cd card-vision && .\env\Scripts\pip install ultralytics opencv-python-headless numpy torch torchvision`
+- Reinstall core dependencies:
+- Windows: `cd card-vision && .\env\Scripts\pip install ultralytics opencv-python-headless numpy torch torchvision`
+- macOS/Linux: `cd card-vision && ./env/bin/pip install ultralytics opencv-python-headless numpy torch torchvision`
 
 ---
 
