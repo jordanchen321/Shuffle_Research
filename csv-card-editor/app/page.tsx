@@ -25,6 +25,14 @@ import {
 const RESEARCHER_NAMES = ["Sam", "Seena", "Jordan", "Caleb", "Peter"] as const;
 const TABLE_HEADERS = [...CSV_HEADERS.slice(0, 4), "label", ...CSV_HEADERS.slice(4), ""] as const;
 
+const CARD_SUITS: ReadonlyArray<{ letter: string; symbol: string; isRed: boolean }> = [
+  { letter: "S", symbol: "♠", isRed: false },
+  { letter: "C", symbol: "♣", isRed: false },
+  { letter: "H", symbol: "♥", isRed: true },
+  { letter: "D", symbol: "♦", isRed: true },
+];
+const CARD_RANKS = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"] as const;
+
 function sequenceIdError(value: string): string | null {
   const len = value.trim().length;
   return len === 10 ? null : `Sequence ID must be exactly 10 characters (currently ${len}).`;
@@ -344,6 +352,43 @@ type CardRowProps = {
   removeRow: (index: number) => void;
 };
 
+function CardPicker({ usedKeys, onPick }: { usedKeys: Set<string>; onPick: (key: string) => void }) {
+  return (
+    <div className="flex flex-col gap-1 overflow-x-auto">
+      {CARD_SUITS.map(({ letter, symbol, isRed }) => (
+        <div key={letter} className="flex items-center gap-1">
+          <span aria-hidden className={`w-5 shrink-0 text-center text-xs ${isRed ? "text-red-600 dark:text-red-500" : "text-zinc-700 dark:text-zinc-300"}`}>
+            {symbol}
+          </span>
+          {CARD_RANKS.map((rank) => {
+            const key = `${rank}${letter}`;
+            const used = usedKeys.has(key);
+            return (
+              <button
+                key={key}
+                type="button"
+                aria-label={humanizeCardKey(key)}
+                onPointerDown={(e) => e.preventDefault()}
+                onClick={() => onPick(key)}
+                disabled={used}
+                className={`min-w-8 rounded px-1 py-0.5 font-mono text-xs transition-colors ${
+                  used
+                    ? "border border-zinc-100 bg-zinc-50 text-zinc-300 dark:border-zinc-800 dark:bg-zinc-900/20 dark:text-zinc-700"
+                    : isRed
+                    ? "border border-red-200 bg-white text-red-600 hover:bg-red-50 dark:border-red-900/50 dark:bg-zinc-900 dark:text-red-500 dark:hover:bg-red-950/30"
+                    : "border border-zinc-200 bg-white text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {rank}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const CardRowComponent = memo(function CardRowComponent({
   row,
   globalIndex,
@@ -478,11 +523,16 @@ export default function Home() {
   const [confirmRestoreStart, setConfirmRestoreStart] = useState(false);
   const [pendingAppend, setPendingAppend] = useState<{ message: string; rows: CardRow[] } | null>(null);
   const [pendingFile, setPendingFile] = useState<{ file: File; rowCount: number } | null>(null);
+  const [activeOrderField, setActiveOrderField] = useState<"start" | "end">("end");
   const [pendingBulkFill, setPendingBulkFill] = useState<{ message: string; banner: string; rows: CardRow[] } | null>(null);
 
   const availableSequences = useMemo(() => computeAvailableSequences(rows), [rows]);
   const startCardCount = useMemo(() => splitOrderText(startOrderText).length, [startOrderText]);
   const endCardCount = useMemo(() => splitOrderText(endOrderText).length, [endOrderText]);
+  const pickerUsedKeys = useMemo(() => {
+    const text = activeOrderField === "start" ? startOrderText : endOrderText;
+    return new Set(splitOrderText(text).map(canonicalCardKey));
+  }, [activeOrderField, startOrderText, endOrderText]);
 
   const rowCount = rows.length;
   const [currentPage, setCurrentPage] = useState(0);
@@ -833,6 +883,14 @@ export default function Home() {
     }
   }, [availableSequences, buildSequenceId, startOrderText, applyRestoreStartOrder]);
 
+  const handlePickCard = useCallback(
+    (key: string) => {
+      const setter = activeOrderField === "start" ? setStartOrderText : setEndOrderText;
+      setter((prev) => (prev.trim() ? `${prev.trimEnd()} ${key}` : key));
+    },
+    [activeOrderField],
+  );
+
   const mergeVisionKeys = useCallback(
     (target: "start" | "end", keys: string[]) => {
       if (target === "start") {
@@ -1005,6 +1063,7 @@ export default function Home() {
               setValue: setStartOrderText,
               count: startCardCount,
               placeholder: "e.g. AS AH 10S 4C KS …",
+              target: "start" as const,
               action: {
                 label: "Restore last end order",
                 title: "Refill from the saved end order of this sequence's last trial",
@@ -1017,6 +1076,7 @@ export default function Home() {
               setValue: setEndOrderText,
               count: endCardCount,
               placeholder: "e.g. KS AS 4C 10S AH …",
+              target: "end" as const,
               action: undefined,
             },
           ].map((field) => (
@@ -1044,12 +1104,33 @@ export default function Home() {
               <textarea
                 value={field.value}
                 onChange={(e) => field.setValue(e.target.value)}
+                onFocus={() => setActiveOrderField(field.target)}
                 className={`${FIELD} min-h-30 flex-1 px-3 py-2`}
                 placeholder={field.placeholder}
                 spellCheck={false}
               />
             </label>
           ))}
+        </div>
+        <div className="mt-3">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400">Add cards to:</span>
+            {(["start", "end"] as const).map((target) => (
+              <button
+                key={target}
+                type="button"
+                onClick={() => setActiveOrderField(target)}
+                className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
+                  activeOrderField === target
+                    ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                    : "border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                }`}
+              >
+                {target === "start" ? "Start order" : "End order"}
+              </button>
+            ))}
+          </div>
+          <CardPicker usedKeys={pickerUsedKeys} onPick={handlePickCard} />
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
           <button
